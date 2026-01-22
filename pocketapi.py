@@ -25,6 +25,14 @@ EOF_TIMEOUT = 1.0
 CHUNK_SIZE = 32 * 1024
 DEFAULT_SAMPLE_RATE = 24000
 
+# ANSI color codes for terminal output
+class Colors:
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
 # map OpenAI voice names to pocket_tts voice names
 VOICE_MAPPING = {
     "alloy": "alba",
@@ -33,6 +41,12 @@ VOICE_MAPPING = {
     "onyx": "cosette",
     "nova": "eponine",
     "shimmer": "azelma",
+}
+
+# Store default voices for later display
+DEFAULT_VOICES = {
+    "openai_aliases": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
+    "pocket_tts": ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
 }
 
 VOICES_DIR = "voices"
@@ -52,12 +66,15 @@ def load_custom_voices():
                 
                 # Validate and convert WAV file if needed
                 try:
-                    # Read the file
-                    audio_data, sample_rate = sf.read(file_path)
+                    # Check file format info first (faster than reading full audio)
+                    file_info = sf.info(file_path)
+                    needs_conversion = file_info.subtype != 'PCM_16'
                     
-                    # Check if conversion is needed (non-int16 format)
-                    if audio_data.dtype != np.int16:
-                        logger.info(f"Converting {f} from {audio_data.dtype} to int16 PCM...")
+                    if needs_conversion:
+                        logger.info(f"Converting {f} from {file_info.subtype} to PCM_16...")
+                        
+                        # Only read audio data if conversion is needed
+                        audio_data, sample_rate = sf.read(file_path)
                         
                         # Normalize to -1 to 1 if needed
                         if audio_data.dtype == np.float32 or audio_data.dtype == np.float64:
@@ -79,10 +96,16 @@ def load_custom_voices():
                     logger.warning(f"⚠️ Failed to load voice '{voice_name}': {e}")
                     continue
     
+    # Display default voices first
+    logger.info(f"{Colors.CYAN}{Colors.BOLD}🔊 Default voices available:{Colors.RESET}")
+    logger.info(f"{Colors.CYAN}   OpenAI aliases: {', '.join(DEFAULT_VOICES['openai_aliases'])}{Colors.RESET}")
+    logger.info(f"{Colors.CYAN}   Pocket TTS: {', '.join(DEFAULT_VOICES['pocket_tts'])}{Colors.RESET}")
+    
+    # Then display custom voices
     if custom_voices:
-        logger.info(f"🎤 Custom voices loaded: {', '.join(custom_voices)}")
+        logger.info(f"{Colors.GREEN}{Colors.BOLD}🎤 Custom voices loaded: {Colors.RESET}{Colors.GREEN}{', '.join(custom_voices)}{Colors.RESET}")
     else:
-        logger.info("No custom voices found in 'voices/' directory.")
+        logger.info(f"{Colors.YELLOW}No custom voices found in 'voices/' directory.{Colors.RESET}")
 
 
 import sys
