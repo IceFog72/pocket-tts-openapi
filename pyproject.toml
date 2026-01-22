@@ -1,0 +1,13 @@
+[project]
+name = "pocket-tts-openapi"
+version = "0.1.0"
+description = "PocketTTS with OpenAI compatible API"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pocket-tts>=1.0.1",
+    "pydantic>=2.12.5",
+    "soundfile>=0.13.1",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+]
