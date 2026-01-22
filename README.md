@@ -104,6 +104,14 @@ curl http://localhost:8001/v1/audio/speech \
 - **Cache location**: `./audio_cache/` (auto-limited to 10 files)
 - **Model cache**: Default HuggingFace cache (`~/.cache/huggingface`)
 
+## Feedback
+
+Join my Discord: [https://discord.gg/2tJcWeMjFQ](https://discord.gg/2tJcWeMjFQ)
+Or find me on the official SillyTavern Discord server.
+
+Support me:
+[Ko-fi](https://ko-fi.com/icefog72) • [Patreon](https://www.patreon.com/cw/IceFog72)
 ---
 
 Inspired by [kyutai-tts-openai-api](https://github.com/dwain-barnes/kyutai-tts-openai-api)
+
