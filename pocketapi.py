@@ -19,8 +19,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-QUEUE_SIZE = 32
-QUEUE_TIMEOUT = 2.0
+QUEUE_SIZE = 256  # Increased from 32 to handle slower consumers
+QUEUE_TIMEOUT = 10.0  # Increased from 2.0 to prevent dropping chunks
 EOF_TIMEOUT = 1.0
 CHUNK_SIZE = 32 * 1024
 DEFAULT_SAMPLE_RATE = 24000
