@@ -8,16 +8,29 @@
 - 🌐 **OpenAI API compatible** - works with existing tools
 - 🏡 **Perfect for Home Assistant** via [OpenAI TTS Component](https://github.com/sfortis/openai_tts)
 
-## Quick Start
+## Installation
 
-### Windows
+### 1. Download Project
+```bash
+git clone https://github.com/IceFog72/pocket-tts-openapi
+cd pocket-tts-openapi
+```
+
+### 2. Setup & Run
+
+#### Windows
 1. Run `install.bat` - sets up Python venv and installs dependencies
 2. Run `start.bat` - starts the server
 
-### Linux
-1. Run `chmod +x install.sh start.sh` (first time only)
+#### Linux
+1. Run `chmod +x install.sh start.sh update.sh` (first time only)
 2. Run `./install.sh` - sets up Python venv and installs dependencies
 3. Run `./start.sh` - starts the server
+
+### 3. Updating
+To get the latest version of the project:
+- **Windows**: Run `update.bat`
+- **Linux**: Run `./update.sh` (ensure it's executable: `chmod +x update.sh`)
 
 **Server runs at** `http://localhost:8001` (or next available port)
 
