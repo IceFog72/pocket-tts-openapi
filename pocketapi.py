@@ -10,20 +10,25 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pocket_tts import TTSModel
 from pocket_tts.data.audio import stream_audio_chunks
+from pocket_tts.modules.stateful_module import init_states
 from pydantic import BaseModel, Field, field_validator
 from queue import Queue, Full
 from typing import Literal, Optional, AsyncIterator
 import soundfile as sf
+import torch
+import safetensors.torch
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-QUEUE_SIZE = 256  # Increased from 32 to handle slower consumers
-QUEUE_TIMEOUT = 10.0  # Increased from 2.0 to prevent dropping chunks
+QUEUE_SIZE = 512  # Increased from 256 for larger head-ahead buffer
+QUEUE_TIMEOUT = 20.0  # Increased from 10.0 to handle stalls better
 EOF_TIMEOUT = 1.0
 CHUNK_SIZE = 32 * 1024
 DEFAULT_SAMPLE_RATE = 24000
+
+MODEL_LOCK = threading.Lock()
 
 # ANSI color codes for terminal output
 class Colors:
@@ -50,52 +55,68 @@ DEFAULT_VOICES = {
 }
 
 VOICES_DIR = "voices"
+EMBEDDINGS_DIR = "embeddings"
 os.makedirs(VOICES_DIR, exist_ok=True)
+os.makedirs(EMBEDDINGS_DIR, exist_ok=True)
 
 def load_custom_voices():
-    """Scan voices directory and update mapping."""
-    import soundfile as sf
+    """Scan voices and embeddings directories and update mapping. Automatically export WAVs if needed."""
     import numpy as np
     
-    custom_voices = []
+    custom_voices = set()
+    
+    # 1. Load existing safetensors from embeddings directory
+    if os.path.exists(EMBEDDINGS_DIR):
+        for f in os.listdir(EMBEDDINGS_DIR):
+            if f.lower().endswith(".safetensors"):
+                voice_name = os.path.splitext(f)[0]
+                file_path = os.path.join(EMBEDDINGS_DIR, f)
+                full_path = os.path.abspath(file_path).replace("\\", "/")
+                VOICE_MAPPING[voice_name] = full_path
+                custom_voices.add(voice_name)
+    
+    # 2. Check WAV files in voices directory for conversion
     if os.path.exists(VOICES_DIR):
         for f in os.listdir(VOICES_DIR):
             if f.lower().endswith(".wav"):
                 voice_name = os.path.splitext(f)[0]
-                file_path = os.path.join(VOICES_DIR, f)
+                wav_path = os.path.join(VOICES_DIR, f)
+                st_path = os.path.join(EMBEDDINGS_DIR, voice_name + ".safetensors")
                 
-                # Validate and convert WAV file if needed
-                try:
-                    # Check file format info first (faster than reading full audio)
-                    file_info = sf.info(file_path)
-                    needs_conversion = file_info.subtype != 'PCM_16'
-                    
-                    if needs_conversion:
-                        logger.info(f"Converting {f} from {file_info.subtype} to PCM_16...")
-                        
-                        # Only read audio data if conversion is needed
-                        audio_data, sample_rate = sf.read(file_path)
-                        
-                        # Normalize to -1 to 1 if needed
-                        if audio_data.dtype == np.float32 or audio_data.dtype == np.float64:
-                            audio_data = np.clip(audio_data, -1.0, 1.0)
-                        
-                        # Convert to int16
-                        audio_data = (audio_data * 32767).astype(np.int16)
-                        
-                        # Save back to file
-                        sf.write(file_path, audio_data, sample_rate, subtype='PCM_16')
-                        logger.info(f"✓ Converted {f} to PCM_16 format")
-                    
-                    # Map name to full absolute path with forward slashes
-                    full_path = os.path.abspath(file_path).replace("\\", "/")
-                    VOICE_MAPPING[voice_name] = full_path
-                    custom_voices.append(voice_name)
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to load voice '{voice_name}': {e}")
-                    continue
-    
+                # If safetensors doesn't exist in embeddings/, try to export it
+                if voice_name not in custom_voices:
+                    if tts_model:
+                        try:
+                            logger.info(f"✨ Exporting '{voice_name}' to embeddings/ for faster loading...")
+                            # we need the model state to get the prompt
+                            audio, sr = sf.read(wav_path)
+                            from pocket_tts.data.audio_utils import convert_audio
+                            audio_pt = torch.from_numpy(audio).float()
+                            if len(audio_pt.shape) == 1:
+                                audio_pt = audio_pt.unsqueeze(0)
+                            audio_resampled = convert_audio(audio_pt, sr, tts_model.config.mimi.sample_rate, 1)
+                            
+                            with torch.no_grad():
+                                prompt = tts_model._encode_audio(audio_resampled.unsqueeze(0).to(tts_model.device))
+                            
+                            safetensors.torch.save_file({"audio_prompt": prompt.cpu()}, st_path)
+                            logger.info(f"✅ Exported '{voice_name}' to {st_path}")
+                            
+                            full_path = os.path.abspath(st_path).replace("\\", "/")
+                            VOICE_MAPPING[voice_name] = full_path
+                            custom_voices.add(voice_name)
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to auto-export voice '{voice_name}': {e}")
+                            # Fallback to WAV if export failed
+                            full_path = os.path.abspath(wav_path).replace("\\", "/")
+                            VOICE_MAPPING[voice_name] = full_path
+                            custom_voices.add(voice_name)
+                    else:
+                        # Model not loaded yet, fallback to WAV for now
+                        full_path = os.path.abspath(wav_path).replace("\\", "/")
+                        VOICE_MAPPING[voice_name] = full_path
+                        custom_voices.add(voice_name)
+
     # Display default voices first
     logger.info(f"{Colors.CYAN}{Colors.BOLD}🔊 Default voices available:{Colors.RESET}")
     logger.info(f"{Colors.CYAN}   OpenAI aliases: {', '.join(DEFAULT_VOICES['openai_aliases'])}{Colors.RESET}")
@@ -103,7 +124,7 @@ def load_custom_voices():
     
     # Then display custom voices
     if custom_voices:
-        logger.info(f"{Colors.GREEN}{Colors.BOLD}🎤 Custom voices loaded: {Colors.RESET}{Colors.GREEN}{', '.join(custom_voices)}{Colors.RESET}")
+        logger.info(f"{Colors.GREEN}{Colors.BOLD}🎤 Custom voices loaded: {Colors.RESET}{Colors.GREEN}{', '.join(sorted(list(custom_voices)))}{Colors.RESET}")
     else:
         logger.info(f"{Colors.YELLOW}No custom voices found in 'voices/' directory.{Colors.RESET}")
 
@@ -135,6 +156,8 @@ class SpeechRequest(BaseModel):
     voice: str = Field("alloy", description="Voice identifier (predefined or custom)")
     response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field("wav")
     speed: Optional[float] = Field(1.0, ge=0.25, le=4.0)
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+    lsd_decode_steps: int = Field(2, ge=1, le=50)
 
     @field_validator("model", mode="before")
     @classmethod
@@ -154,6 +177,13 @@ class SpeechRequest(BaseModel):
         if not v:
             return "wav"
         return v
+
+
+class ExportVoiceRequest(BaseModel):
+    voice: str = Field(..., description="Voice name (WAV file in voices/ directory)")
+    truncate: bool = Field(False, description="Truncate audio to 30 seconds")
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+    lsd_decode_steps: int = Field(2, ge=1, le=50)
 
 
 class FileLikeQueueWriter:
@@ -202,10 +232,24 @@ device: Optional[str] = None
 sample_rate: Optional[int] = None
 
 
+def set_high_priority():
+    """Set the current process to High Priority on Windows to avoid audio choppiness."""
+    if os.name == 'nt':
+        try:
+            import ctypes
+            # HIGH_PRIORITY_CLASS = 0x00000080
+            if ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x00000080):
+                logger.info("🚀 Process priority set to HIGH")
+            else:
+                logger.warning("⚠️ Failed to set process priority to HIGH")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not set process priority: {e}")
+
 @asynccontextmanager
 async def lifespan(app):
     """Load the TTS model on startup."""
     logger.info("🚀 Starting TTS API server...")
+    set_high_priority()
     load_tts_model()
     yield
 
@@ -222,27 +266,47 @@ def load_tts_model() -> None:
     load_custom_voices()
 
 
-def _start_audio_producer(queue: Queue, voice_name: str, text: str) -> threading.Thread:
+def _start_audio_producer(queue: Queue, voice_name: str, text: str, temperature: float = 0.7, lsd_decode_steps: int = 2) -> threading.Thread:
     """Start background thread that generates audio and writes to queue."""
 
     def producer():
-        logger.info(f"Starting audio generation for voice: {voice_name}")
+        logger.info(f"Starting audio generation for voice: {voice_name} (temp={temperature}, steps={lsd_decode_steps})")
         try:
-            # Check if voice_name is a file path (custom voice)
-            if os.path.exists(voice_name) and os.path.isfile(voice_name):
-                 logger.info(f"Cloning voice from file: {voice_name}")
-                 model_state = tts_model.get_state_for_audio_prompt(voice_name)
-            else:
-                 # Standard preset voice
-                 model_state = tts_model.get_state_for_audio_prompt(voice_name)
-            
-            audio_chunks = tts_model.generate_audio_stream(
-                model_state=model_state, text_to_generate=text
-            )
-            with FileLikeQueueWriter(queue) as writer:
-                stream_audio_chunks(
-                    writer, audio_chunks, sample_rate or DEFAULT_SAMPLE_RATE
+            with MODEL_LOCK:
+                # Apply quality parameters to the global model instance
+                tts_model.temp = temperature
+                tts_model.lsd_decode_steps = lsd_decode_steps
+                
+                # Check if voice_name is a file path (custom voice)
+                if os.path.exists(voice_name) and os.path.isfile(voice_name):
+                    file_ext = os.path.splitext(voice_name)[1].lower()
+                    if file_ext == ".safetensors":
+                        logger.info(f"Loading pre-exported voice embedding: {voice_name}")
+                        prompt = safetensors.torch.load_file(voice_name)["audio_prompt"]
+                        prompt = prompt.to(tts_model.device)
+                        
+                        # Manually initialize state and prompt
+                        model_state = init_states(tts_model.flow_lm, batch_size=1, sequence_length=1000)
+                        with torch.no_grad():
+                            tts_model._run_flow_lm_and_increment_step(model_state=model_state, audio_conditioning=prompt)
+                        
+                        # Optimize memory by slicing KV cache
+                        num_audio_frames = prompt.shape[1]
+                        tts_model._slice_kv_cache(model_state, num_audio_frames)
+                    else:
+                        logger.info(f"Cloning voice from file: {voice_name}")
+                        model_state = tts_model.get_state_for_audio_prompt(voice_name)
+                else:
+                    # Standard preset voice
+                    model_state = tts_model.get_state_for_audio_prompt(voice_name)
+                
+                audio_chunks = tts_model.generate_audio_stream(
+                    model_state=model_state, text_to_generate=text
                 )
+                with FileLikeQueueWriter(queue) as writer:
+                    stream_audio_chunks(
+                        writer, audio_chunks, sample_rate or DEFAULT_SAMPLE_RATE
+                    )
         except Exception:
             logger.exception(f"Audio generation failed for voice: {voice_name}")
         finally:
@@ -337,11 +401,13 @@ async def _generate_audio_core(
     speed: float,
     format: str,
     chunk_size: int,
+    temperature: float = 0.7,
+    lsd_decode_steps: int = 2,
 ) -> AsyncIterator[bytes]:
     """Internal generator for the actual TTS + FFmpeg logic."""
     queue = Queue(maxsize=QUEUE_SIZE)
     # Using the normalized voice_name passed from wrapper
-    producer_thread = _start_audio_producer(queue, voice_name, text)
+    producer_thread = _start_audio_producer(queue, voice_name, text, temperature, lsd_decode_steps)
 
     try:
         if format in ("wav", "pcm"):
@@ -383,6 +449,8 @@ async def generate_audio(
     speed: float = 1.0,
     format: str = "wav",
     chunk_size: int = CHUNK_SIZE,
+    temperature: float = 0.7,
+    lsd_decode_steps: int = 2,
 ) -> AsyncIterator[bytes]:
     """Generate and stream audio, with filesystem caching."""
     if tts_model is None:
@@ -392,8 +460,8 @@ async def generate_audio(
     voice_name = VOICE_MAPPING.get(voice, voice)
     
     # Generate Cache Key
-    # We include text, normalized voice, speed, and format
-    cache_key = f"{text}|{voice_name}|{format}|{speed}"
+    # We include text, normalized voice, speed, format, temperature, and steps
+    cache_key = f"{text}|{voice_name}|{format}|{speed}|{temperature}|{lsd_decode_steps}"
     cache_hash = hashlib.md5(cache_key.encode("utf-8")).hexdigest()
     cache_filename = f"{cache_hash}.{format}"
     cache_path = os.path.join(AUDIO_CACHE_DIR, cache_filename)
@@ -419,7 +487,7 @@ async def generate_audio(
     
     try:
         async with await open_file(temp_path, "wb") as cache_file:
-            async for chunk in _generate_audio_core(text, voice_name, speed, format, chunk_size):
+            async for chunk in _generate_audio_core(text, voice_name, speed, format, chunk_size, temperature, lsd_decode_steps):
                 await cache_file.write(chunk)
                 yield chunk
         
@@ -535,11 +603,66 @@ async def text_to_speech(request: SpeechRequest) -> StreamingResponse:
                 voice=request.voice,
                 speed=request.speed,
                 format=request.response_format,
+                temperature=request.temperature,
+                lsd_decode_steps=request.lsd_decode_steps,
             ),
             media_type=MEDIA_TYPES.get(request.response_format, "audio/wav"),
         )
     except Exception as e:
         logger.exception("Internal Server Error in text_to_speech")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/audio/export-voice")
+async def export_voice(request: ExportVoiceRequest):
+    """Manually export a WAV voice to safetensors embedding."""
+    if not tts_model:
+        raise HTTPException(status_code=503, detail="TTS model not loaded")
+    
+    voice_name = request.voice
+    wav_path = os.path.join(VOICES_DIR, f"{voice_name}.wav")
+    st_path = os.path.join(EMBEDDINGS_DIR, f"{voice_name}.safetensors")
+    
+    if not os.path.exists(wav_path):
+        # Check if voice_name already has extension
+        if voice_name.lower().endswith(".wav"):
+             wav_path = os.path.join(VOICES_DIR, voice_name)
+             st_path = os.path.join(EMBEDDINGS_DIR, os.path.splitext(voice_name)[0] + ".safetensors")
+        
+        if not os.path.exists(wav_path):
+            raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' (WAV) not found in {VOICES_DIR}")
+
+    try:
+        logger.info(f"✨ Manually exporting '{voice_name}' to embeddings/ (temp={request.temperature}, steps={request.lsd_decode_steps})...")
+        audio, sr = sf.read(wav_path)
+        from pocket_tts.data.audio_utils import convert_audio
+        audio_pt = torch.from_numpy(audio).float()
+        if len(audio_pt.shape) == 1:
+            audio_pt = audio_pt.unsqueeze(0)
+            
+        if request.truncate:
+            max_samples = int(30 * sr)
+            if audio_pt.shape[-1] > max_samples:
+                audio_pt = audio_pt[..., :max_samples]
+                logger.info(f"Audio truncated to 30s for export")
+
+        audio_resampled = convert_audio(audio_pt, sr, tts_model.config.mimi.sample_rate, 1)
+        
+        with torch.no_grad():
+            with MODEL_LOCK:
+                tts_model.temp = request.temperature
+                tts_model.lsd_decode_steps = request.lsd_decode_steps
+                prompt = tts_model._encode_audio(audio_resampled.unsqueeze(0).to(tts_model.device))
+        
+        safetensors.torch.save_file({"audio_prompt": prompt.cpu()}, st_path)
+        logger.info(f"✅ Exported '{voice_name}' to {st_path}")
+        
+        # Reload custom voices to update mapping
+        load_custom_voices()
+        
+        return {"status": "success", "message": f"Exported {voice_name} to safetensors", "path": st_path}
+    except Exception as e:
+        logger.exception(f"Failed to export voice '{voice_name}'")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")

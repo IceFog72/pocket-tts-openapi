@@ -4,7 +4,9 @@
 
 - 🚀 **Runs at 1.5x real-time** on older CPUs (tested on Haswell)
 - 🎭 **Voice cloning support** - use your own `.wav` files
+- ⚡ **Optimized Loading** - converts voices to `.safetensors` for instant startup
 - 📦 **Audio caching** - instant response for repeated phrases
+- 🛡️ **Stuttering Protection** - runs with High Priority to prevent choppiness under load
 - 🌐 **OpenAI API compatible** - works with existing tools
 - 🏡 **Perfect for Home Assistant** via [OpenAI TTS Component](https://github.com/sfortis/openai_tts)
 
@@ -20,7 +22,7 @@ cd pocket-tts-openapi
 
 #### Windows
 1. Run `install.bat` - sets up Python venv and installs dependencies
-2. Run `start.bat` - starts the server
+2. Run `start.bat` - starts the server (automatically sets **High Priority**)
 
 #### Linux
 1. Run `chmod +x install.sh start.sh update.sh` (first time only)
@@ -30,7 +32,7 @@ cd pocket-tts-openapi
 ### 3. Updating
 To get the latest version of the project:
 - **Windows**: Run `update.bat`
-- **Linux**: Run `./update.sh` (ensure it's executable: `chmod +x update.sh`)
+- **Linux**: Run `./update.sh`
 
 **Server runs at** `http://localhost:8001` (or next available port)
 
@@ -41,57 +43,51 @@ Use preset voices without any setup:
 - **Pocket TTS**: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`
 - **OpenAI aliases**: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`
 
-### Voice Cloning (Custom Voices)
+### Voice Cloning & Embeddings
+
+The server uses two folders to manage custom voices:
+- `voices/`: Place your source `.wav` files here.
+- `embeddings/`: Optimized `.safetensors` embeddings are stored here for instant loading.
 
 #### Setup Authentication
 To use custom voices, authenticate with HuggingFace:
-
 1. **Accept License**: Visit https://huggingface.co/kyutai/pocket-tts
-2. **Login locally**:
-   ```bash
-   # Windows
-   .\venv\Scripts\activate
-   huggingface-cli login
-   
-   # Linux
-   source venv/bin/activate
-   huggingface-cli login
-   ```
-   Enter your token from: https://huggingface.co/settings/tokens
+2. **Login locally**: `huggingface-cli login` (enter your token from HF settings)
 3. **Restart** the server
 
-#### Add Custom Voices
-1. Place `.wav` files in the `voices/` folder
-2. Restart server - you'll see: `🎤 Custom voices loaded: filename1, filename2`
-3. Use via API: `"voice": "filename1"`
+#### Adding Custom Voices
+1. Place `.wav` files in the `voices/` folder.
+2. Start the server. It will automatically convert WAVs to `.safetensors` in the `embeddings/` folder.
+3. From then on, the voice will load nearly instantly from the embedding!
+4. Use via API: `"voice": "filename"`
 
-**Audio Format Requirements:**
-- Mono or stereo `.wav` files
-- Any sample rate (auto-converted to PCM if needed)
-- Filenames become voice names (without `.wav` extension)
+### Audio Quality & Performance
+- **High Priority Mode**: On Windows, the server automatically runs as a High Priority process to ensure smooth audio even when the system is under heavy load (e.g., gaming).
+- **Quality Parameters**: You can now control the output quality via the API:
+  - `temperature`: Control diversity/naturalness (0.0 to 2.0, default 0.7).
+  - `lsd_decode_steps`: Control quality (1 to 50, default 2). Higher is better but slower.
 
 ### Audio Caching
-- Automatically caches last **10 generated files**
-- Cache hit = instant response (no regeneration)
-- Saves **both audio + JSON metadata** (text, voice, etc.)
+- Automatically caches generated files (default limit: 10).
+- Cache keys include voice, text, and quality parameters (changing temperature/steps triggers fresh generation).
+- Cache hit = instant response.
 
-### Smart Port Selection
-Server automatically finds free port starting from **8001**. Check console output:
-```
-✅ Server binding to: http://0.0.0.0:8001
-```
+## API Documentation
 
-## Usage Example
+### 1. Speech Generation (`/v1/audio/speech`)
+OpenAI-compatible endpoint for generating speech.
 
+**Example:**
 ```bash
 curl http://localhost:8001/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "tts-1",
-    "input": "Hello! Testing Pocket TTS.",
+    "input": "Hello! This is high quality audio.",
     "voice": "nova",
     "response_format": "mp3",
-    "speed": 1.0
+    "speed": 1.0,
+    "temperature": 0.5,
+    "lsd_decode_steps": 4
   }' \
   --output test.mp3
 ```
@@ -125,6 +121,5 @@ Or find me on the official SillyTavern Discord server.
 Support me:
 [Ko-fi](https://ko-fi.com/icefog72) • [Patreon](https://www.patreon.com/cw/IceFog72)
 ---
-
 Inspired by [kyutai-tts-openai-api](https://github.com/dwain-barnes/kyutai-tts-openai-api)
 
