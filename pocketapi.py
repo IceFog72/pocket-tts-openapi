@@ -158,6 +158,7 @@ class SpeechRequest(BaseModel):
     speed: Optional[float] = Field(1.0, ge=0.25, le=4.0)
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     lsd_decode_steps: int = Field(2, ge=1, le=50)
+    stream: bool = Field(False, description="Presence of this flag is for compatibility, streaming is always enabled")
 
     @field_validator("model", mode="before")
     @classmethod
@@ -237,11 +238,30 @@ def set_high_priority():
     if os.name == 'nt':
         try:
             import ctypes
+            from ctypes import wintypes
+            
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            
+            # Explicitly define types to avoid "Invalid Handle" (Error 6) on 64-bit systems
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel32.SetPriorityClass.restype = wintypes.BOOL
+            
+            handle = kernel32.GetCurrentProcess()
+            
             # HIGH_PRIORITY_CLASS = 0x00000080
-            if ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x00000080):
+            # ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+            
+            if kernel32.SetPriorityClass(handle, 0x00000080):
                 logger.info("🚀 Process priority set to HIGH")
             else:
-                logger.warning("⚠️ Failed to set process priority to HIGH")
+                err = ctypes.get_last_error()
+                logger.warning(f"⚠️ Failed to set priority to HIGH (Error: {err}). Trying ABOVE_NORMAL...")
+                if kernel32.SetPriorityClass(handle, 0x00008000):
+                    logger.info("✅ Process priority set to ABOVE_NORMAL")
+                else:
+                    err = ctypes.get_last_error()
+                    logger.warning(f"❌ Failed to set any elevated priority (Error: {err})")
         except Exception as e:
             logger.warning(f"⚠️ Could not set process priority: {e}")
 
@@ -451,6 +471,7 @@ async def generate_audio(
     chunk_size: int = CHUNK_SIZE,
     temperature: float = 0.7,
     lsd_decode_steps: int = 2,
+    stream: bool = False,
 ) -> AsyncIterator[bytes]:
     """Generate and stream audio, with filesystem caching."""
     if tts_model is None:
@@ -605,6 +626,7 @@ async def text_to_speech(request: SpeechRequest) -> StreamingResponse:
                 format=request.response_format,
                 temperature=request.temperature,
                 lsd_decode_steps=request.lsd_decode_steps,
+                stream=request.stream,
             ),
             media_type=MEDIA_TYPES.get(request.response_format, "audio/wav"),
         )

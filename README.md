@@ -6,6 +6,7 @@
 - 🎭 **Voice cloning support** - use your own `.wav` files
 - ⚡ **Optimized Loading** - converts voices to `.safetensors` for instant startup
 - 📦 **Audio caching** - instant response for repeated phrases
+- 🛰️ **Streaming Support** - real-time audio generation (OpenAI compatible)
 - 🛡️ **Stuttering Protection** - runs with High Priority to prevent choppiness under load
 - 🌐 **OpenAI API compatible** - works with existing tools
 - 🏡 **Perfect for Home Assistant** via [OpenAI TTS Component](https://github.com/sfortis/openai_tts)
@@ -87,7 +88,8 @@ curl http://localhost:8001/v1/audio/speech \
     "response_format": "mp3",
     "speed": 1.0,
     "temperature": 0.5,
-    "lsd_decode_steps": 4
+    "lsd_decode_steps": 4,
+    "stream": true
   }' \
   --output test.mp3
 ```
