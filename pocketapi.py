@@ -7,6 +7,7 @@ import threading
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pocket_tts import TTSModel
 from pocket_tts.data.audio import stream_audio_chunks
@@ -21,12 +22,20 @@ import safetensors.torch
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from config import settings
+
+# Silence chatty library logs to keep progress bar clean
+logging.getLogger("pocket_tts").setLevel(logging.WARNING)
+logging.getLogger("pocket_tts.models.tts_model").setLevel(logging.WARNING)
+logging.getLogger("pocket_tts.utils.utils").setLevel(logging.WARNING)
+
 # Constants
-QUEUE_SIZE = 512  # Increased from 256 for larger head-ahead buffer
-QUEUE_TIMEOUT = 20.0  # Increased from 10.0 to handle stalls better
-EOF_TIMEOUT = 1.0
-CHUNK_SIZE = 32 * 1024
-DEFAULT_SAMPLE_RATE = 24000
+# These are now loaded from config.py and config.ini
+# QUEUE_SIZE = 1024
+# QUEUE_TIMEOUT = 20.0
+# EOF_TIMEOUT = 1.0
+# CHUNK_SIZE = 32 * 1024
+# DEFAULT_SAMPLE_RATE = 24000
 
 MODEL_LOCK = threading.Lock()
 
@@ -54,10 +63,10 @@ DEFAULT_VOICES = {
     "pocket_tts": ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
 }
 
-VOICES_DIR = "voices"
-EMBEDDINGS_DIR = "embeddings"
-os.makedirs(VOICES_DIR, exist_ok=True)
-os.makedirs(EMBEDDINGS_DIR, exist_ok=True)
+# VOICES_DIR = "voices"
+# EMBEDDINGS_DIR = "embeddings"
+# os.makedirs(VOICES_DIR, exist_ok=True)
+# os.makedirs(EMBEDDINGS_DIR, exist_ok=True)
 
 def load_custom_voices():
     """Scan voices and embeddings directories and update mapping. Automatically export WAVs if needed."""
@@ -66,22 +75,22 @@ def load_custom_voices():
     custom_voices = set()
     
     # 1. Load existing safetensors from embeddings directory
-    if os.path.exists(EMBEDDINGS_DIR):
-        for f in os.listdir(EMBEDDINGS_DIR):
+    if os.path.exists(settings.embeddings_dir):
+        for f in os.listdir(settings.embeddings_dir):
             if f.lower().endswith(".safetensors"):
                 voice_name = os.path.splitext(f)[0]
-                file_path = os.path.join(EMBEDDINGS_DIR, f)
+                file_path = os.path.join(settings.embeddings_dir, f)
                 full_path = os.path.abspath(file_path).replace("\\", "/")
                 VOICE_MAPPING[voice_name] = full_path
                 custom_voices.add(voice_name)
     
     # 2. Check WAV files in voices directory for conversion
-    if os.path.exists(VOICES_DIR):
-        for f in os.listdir(VOICES_DIR):
+    if os.path.exists(settings.voices_dir):
+        for f in os.listdir(settings.voices_dir):
             if f.lower().endswith(".wav"):
                 voice_name = os.path.splitext(f)[0]
-                wav_path = os.path.join(VOICES_DIR, f)
-                st_path = os.path.join(EMBEDDINGS_DIR, voice_name + ".safetensors")
+                wav_path = os.path.join(settings.voices_dir, f)
+                st_path = os.path.join(settings.embeddings_dir, voice_name + ".safetensors")
                 
                 # If safetensors doesn't exist in embeddings/, try to export it
                 if voice_name not in custom_voices:
@@ -190,7 +199,7 @@ class ExportVoiceRequest(BaseModel):
 class FileLikeQueueWriter:
     """File-like adapter that writes bytes to a queue with backpressure."""
 
-    def __init__(self, queue: Queue, timeout: float = QUEUE_TIMEOUT):
+    def __init__(self, queue: Queue, timeout: float = settings.queue_timeout):
         self.queue = queue
         self.timeout = timeout
 
@@ -209,7 +218,7 @@ class FileLikeQueueWriter:
 
     def close(self) -> None:
         try:
-            self.queue.put(None, timeout=EOF_TIMEOUT)
+            self.queue.put(None, timeout=settings.eof_timeout)
         except (Full, Exception):
             try:
                 self.queue.put_nowait(None)
@@ -280,7 +289,7 @@ def load_tts_model() -> None:
 
     tts_model = TTSModel.load_model()
     device = tts_model.device
-    sample_rate = getattr(tts_model, "sample_rate", DEFAULT_SAMPLE_RATE)
+    sample_rate = getattr(tts_model, "sample_rate", settings.default_sample_rate)
 
     logger.info(f"Pocket TTS loaded | Device: {device} | Sample Rate: {sample_rate}")
     load_custom_voices()
@@ -325,7 +334,7 @@ def _start_audio_producer(queue: Queue, voice_name: str, text: str, temperature:
                 )
                 with FileLikeQueueWriter(queue) as writer:
                     stream_audio_chunks(
-                        writer, audio_chunks, sample_rate or DEFAULT_SAMPLE_RATE
+                        writer, audio_chunks, sample_rate or settings.default_sample_rate
                     )
         except Exception:
             logger.exception(f"Audio generation failed for voice: {voice_name}")
@@ -345,7 +354,7 @@ async def _stream_queue_chunks(queue: Queue) -> AsyncIterator[bytes]:
     while True:
         chunk = await asyncio.to_thread(queue.get)
         if chunk is None:
-            logger.info("Received EOF")
+            logger.debug("Received EOF from producer")
             break
         yield chunk
 
@@ -412,8 +421,7 @@ from anyio import open_file, Path
 
 # ... (Previous imports)
 
-AUDIO_CACHE_DIR = "audio_cache"
-os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
+
 
 async def _generate_audio_core(
     text: str,
@@ -425,7 +433,7 @@ async def _generate_audio_core(
     lsd_decode_steps: int = 2,
 ) -> AsyncIterator[bytes]:
     """Internal generator for the actual TTS + FFmpeg logic."""
-    queue = Queue(maxsize=QUEUE_SIZE)
+    queue = Queue(maxsize=settings.queue_size)
     # Using the normalized voice_name passed from wrapper
     producer_thread = _start_audio_producer(queue, voice_name, text, temperature, lsd_decode_steps)
 
@@ -444,7 +452,7 @@ async def _generate_audio_core(
                 while True:
                     chunk = await asyncio.to_thread(proc.stdout.read, chunk_size)
                     if not chunk:
-                        logger.info(f"FFmpeg output complete for {format}")
+                        logger.debug(f"FFmpeg output complete for {format}")
                         break
                     yield chunk
             finally:
@@ -468,7 +476,7 @@ async def generate_audio(
     voice: str = "alloy",
     speed: float = 1.0,
     format: str = "wav",
-    chunk_size: int = CHUNK_SIZE,
+    chunk_size: int = settings.chunk_size,
     temperature: float = 0.7,
     lsd_decode_steps: int = 2,
     stream: bool = False,
@@ -485,7 +493,7 @@ async def generate_audio(
     cache_key = f"{text}|{voice_name}|{format}|{speed}|{temperature}|{lsd_decode_steps}"
     cache_hash = hashlib.md5(cache_key.encode("utf-8")).hexdigest()
     cache_filename = f"{cache_hash}.{format}"
-    cache_path = os.path.join(AUDIO_CACHE_DIR, cache_filename)
+    cache_path = os.path.join(settings.audio_cache_dir, cache_filename)
     
     # 1. Check Cache
     if os.path.exists(cache_path):
@@ -493,7 +501,7 @@ async def generate_audio(
         try:
             async with await open_file(cache_path, "rb") as f:
                 while True:
-                    chunk = await f.read(CHUNK_SIZE)
+                    chunk = await f.read(settings.chunk_size)
                     if not chunk:
                         break
                     yield chunk
@@ -572,19 +580,19 @@ async def cleanup_cache():
             audio_files = []
             extensions = tuple(list(FFMPEG_FORMATS.keys()) + ["wav", "pcm"])
             
-            for f in os.listdir(AUDIO_CACHE_DIR):
-                path = os.path.join(AUDIO_CACHE_DIR, f)
+            for f in os.listdir(settings.audio_cache_dir):
+                path = os.path.join(settings.audio_cache_dir, f)
                 if os.path.isfile(path) and f.endswith(extensions):
                     audio_files.append((path, os.path.getmtime(path)))
             
-            if len(audio_files) <= CACHE_LIMIT:
+            if len(audio_files) <= settings.cache_limit:
                 return
 
             # Sort by mtime (oldest first)
             audio_files.sort(key=lambda x: x[1])
             
             # Delete oldest
-            to_delete = audio_files[:len(audio_files) - CACHE_LIMIT]
+            to_delete = audio_files[:len(audio_files) - settings.cache_limit]
             for audio_path, _ in to_delete:
                 try:
                     # Remove audio file
@@ -611,6 +619,31 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Add CORS middleware to allow SillyTavern (and other clients) to access the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/v1/voices")
+async def get_voices():
+    """Return all available voices (built-in + custom)."""
+    # Combine everything: default aliases, pocket_tts names, and custom keys in VOICE_MAPPING
+    voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
+    for v in VOICE_MAPPING.keys():
+        voices.add(v)
+    return {"voices": sorted(list(voices))}
+
+
+@app.get("/v1/formats")
+async def get_formats():
+    """Return supported audio formats."""
+    return {"formats": sorted(list(MEDIA_TYPES.keys()))}
+
 
 @app.post("/v1/audio/speech")
 async def text_to_speech(request: SpeechRequest) -> StreamingResponse:
@@ -629,6 +662,12 @@ async def text_to_speech(request: SpeechRequest) -> StreamingResponse:
                 stream=request.stream,
             ),
             media_type=MEDIA_TYPES.get(request.response_format, "audio/wav"),
+            headers={
+                "Transfer-Encoding": "chunked",
+                "X-Accel-Buffering": "no",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
         )
     except Exception as e:
         logger.exception("Internal Server Error in text_to_speech")
@@ -642,17 +681,17 @@ async def export_voice(request: ExportVoiceRequest):
         raise HTTPException(status_code=503, detail="TTS model not loaded")
     
     voice_name = request.voice
-    wav_path = os.path.join(VOICES_DIR, f"{voice_name}.wav")
-    st_path = os.path.join(EMBEDDINGS_DIR, f"{voice_name}.safetensors")
+    wav_path = os.path.join(settings.voices_dir, f"{voice_name}.wav")
+    st_path = os.path.join(settings.embeddings_dir, f"{voice_name}.safetensors")
     
     if not os.path.exists(wav_path):
         # Check if voice_name already has extension
         if voice_name.lower().endswith(".wav"):
-             wav_path = os.path.join(VOICES_DIR, voice_name)
-             st_path = os.path.join(EMBEDDINGS_DIR, os.path.splitext(voice_name)[0] + ".safetensors")
+             wav_path = os.path.join(settings.voices_dir, voice_name)
+             st_path = os.path.join(settings.embeddings_dir, os.path.splitext(voice_name)[0] + ".safetensors")
         
         if not os.path.exists(wav_path):
-            raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' (WAV) not found in {VOICES_DIR}")
+            raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' (WAV) not found in {settings.voices_dir}")
 
     try:
         logger.info(f"✨ Manually exporting '{voice_name}' to embeddings/ (temp={request.temperature}, steps={request.lsd_decode_steps})...")
@@ -708,25 +747,13 @@ if __name__ == "__main__":
         "fmt"
     ] = '%(asctime)s - %(client_addr)s - "%(request_line)s" %(status_code)s'
 
-    import socket
-
-    def find_free_port(start_port: int = 8001, max_retries: int = 20) -> int:
-        """Find the first available port starting from start_port."""
-        for port in range(start_port, start_port + max_retries):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                try:
-                    s.bind(("0.0.0.0", port))
-                    return port
-                except OSError:
-                    continue
-        raise RuntimeError(f"Could not find a free port in range {start_port}-{start_port + max_retries}")
-
     try:
-        port = find_free_port(8001)
+        port = settings.server_port
+        host = settings.server_host
         logger.info(f"Starting server with HTTP debug logging enabled")
-        logger.info(f"✅ Server binding to: http://0.0.0.0:{port}")
+        logger.info(f"✅ Server binding to: http://{host}:{port}")
         logger.info(f"ℹ️  If you are using SillyTavern, set provider endpoint to: http://127.0.0.1:{port}/v1/audio/speech")
-        uvicorn.run(app, host="0.0.0.0", port=port, log_config=log_config, access_log=True)
+        uvicorn.run(app, host=host, port=port, log_config=log_config, access_log=True)
     except Exception as e:
         logger.exception("Failed to start server")
         input("Press Enter to exit...")

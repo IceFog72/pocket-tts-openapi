@@ -7,7 +7,11 @@ requires-python = ">=3.10"
 dependencies = [
     "pocket-tts>=1.0.1",
     "pydantic>=2.12.5",
+    "pydantic-settings>=2.2.1",
     "soundfile>=0.13.1",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
 ]
+
+[tool.setuptools]
+py-modules = ["pocketapi", "config"]
