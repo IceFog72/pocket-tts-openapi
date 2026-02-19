@@ -1,23 +1,37 @@
 import asyncio
+import hashlib
 import io
+import json
 import logging
 import os
 import subprocess
+import sys
 import threading
+import uuid
+
+import numpy as np
+import soundfile as sf
+import torch
 import uvicorn
+import safetensors.torch
+from anyio import open_file, Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pocket_tts import TTSModel
-from pocket_tts.data.audio import stream_audio_chunks
-from pocket_tts.modules.stateful_module import init_states
 from pydantic import BaseModel, Field, field_validator
 from queue import Queue, Full
 from typing import Literal, Optional, AsyncIterator
-import soundfile as sf
-import torch
-import safetensors.torch
+
+from pocket_tts import TTSModel
+from pocket_tts.data.audio import stream_audio_chunks
+from pocket_tts.data.audio_utils import convert_audio
+from pocket_tts.modules.stateful_module import init_states
+
+# Windows-specific imports
+if os.name == 'nt':
+    import ctypes
+    from ctypes import wintypes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,7 +84,6 @@ DEFAULT_VOICES = {
 
 def load_custom_voices():
     """Scan voices and embeddings directories and update mapping. Automatically export WAVs if needed."""
-    import numpy as np
     
     custom_voices = set()
     
@@ -99,7 +112,6 @@ def load_custom_voices():
                             logger.info(f"✨ Exporting '{voice_name}' to embeddings/ for faster loading...")
                             # we need the model state to get the prompt
                             audio, sr = sf.read(wav_path)
-                            from pocket_tts.data.audio_utils import convert_audio
                             audio_pt = torch.from_numpy(audio).float()
                             if len(audio_pt.shape) == 1:
                                 audio_pt = audio_pt.unsqueeze(0)
@@ -138,11 +150,10 @@ def load_custom_voices():
         logger.info(f"{Colors.YELLOW}No custom voices found in 'voices/' directory.{Colors.RESET}")
 
 
-import sys
 
 FFMPEG_FORMATS = {
     "mp3": ("mp3", "mp3_mf" if sys.platform == "win32" else "libmp3lame"),
-    "opus": ("ogg", "libopus"),
+    "opus": ("ogg", "opus"),
     "aac": ("adts", "aac"),
     "flac": ("flac", "flac"),
 }
@@ -158,22 +169,24 @@ MEDIA_TYPES = {
 
 
 class SpeechRequest(BaseModel):
-    model: Literal["tts-1", "tts-1-hd"] = Field("tts-1", description="TTS model to use")
+    model: Literal["tts-1", "tts-1-hd", "tts-1-cuda", "tts-1-hd-cuda"] = Field("tts-1", description="TTS model to use")
     input: str = Field(
         ..., min_length=1, max_length=4096, description="Text to generate"
     )
     voice: str = Field("alloy", description="Voice identifier (predefined or custom)")
     response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field("wav")
     speed: Optional[float] = Field(1.0, ge=0.25, le=4.0)
-    temperature: float = Field(0.7, ge=0.0, le=2.0)
-    lsd_decode_steps: int = Field(2, ge=1, le=50)
+    temperature: float = Field(default_factory=lambda: settings.temperature, ge=0.0, le=2.0)
+    top_p: float = Field(default_factory=lambda: settings.top_p, ge=0.1, le=1.0, description="Nucleus sampling")
+    repetition_penalty: float = Field(default_factory=lambda: settings.repetition_penalty, ge=1.0, le=2.0)
+    lsd_decode_steps: int = Field(default_factory=lambda: settings.lsd_decode_steps, ge=1, le=50)
     stream: bool = Field(False, description="Presence of this flag is for compatibility, streaming is always enabled")
 
     @field_validator("model", mode="before")
     @classmethod
     def validate_model(cls, v: str) -> str:
         if not v:
-            return "tts-1"
+            return settings.model_tier
         return v
 
     @field_validator("voice", mode="before")
@@ -192,8 +205,10 @@ class SpeechRequest(BaseModel):
 class ExportVoiceRequest(BaseModel):
     voice: str = Field(..., description="Voice name (WAV file in voices/ directory)")
     truncate: bool = Field(False, description="Truncate audio to 30 seconds")
-    temperature: float = Field(0.7, ge=0.0, le=2.0)
-    lsd_decode_steps: int = Field(2, ge=1, le=50)
+    temperature: float = Field(default_factory=lambda: settings.temperature, ge=0.0, le=2.0)
+    top_p: float = Field(default_factory=lambda: settings.top_p, ge=0.1, le=1.0)
+    repetition_penalty: float = Field(default_factory=lambda: settings.repetition_penalty, ge=1.0, le=2.0)
+    lsd_decode_steps: int = Field(default_factory=lambda: settings.lsd_decode_steps, ge=1, le=50)
 
 
 class FileLikeQueueWriter:
@@ -210,8 +225,8 @@ class FileLikeQueueWriter:
             self.queue.put(data, timeout=self.timeout)
             return len(data)
         except Full:
-            logger.warning("Queue full, dropping chunk")
-            return 0
+            logger.warning("Queue timeout: Client disconnected or too slow.")
+            raise IOError("Queue full - aborting generation")
 
     def flush(self) -> None:
         pass
@@ -246,9 +261,6 @@ def set_high_priority():
     """Set the current process to High Priority on Windows to avoid audio choppiness."""
     if os.name == 'nt':
         try:
-            import ctypes
-            from ctypes import wintypes
-            
             kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
             
             # Explicitly define types to avoid "Invalid Handle" (Error 6) on 64-bit systems
@@ -283,11 +295,31 @@ async def lifespan(app):
     yield
 
 
+def _slice_kv_cache(self, model_state: dict, sequence_length: int):
+    """Memory optimization: Slice KV cache to actual prompt length.
+    Monkey-patched because it's missing in some pocket-tts versions.
+    """
+    for module_name, module_state in model_state.items():
+        if "cache" in module_state:
+            cache = module_state["cache"]
+            # StreamingMultiheadAttention: [2, B, T, H, D] -> T is dim 2
+            # MimiStreamingMultiheadAttention: [2, B, H, T, D] -> T is dim 3
+            if cache.shape[2] > sequence_length:
+                module_state["cache"] = cache[:, :, :sequence_length, :, :].contiguous()
+            elif cache.shape[3] > sequence_length:
+                module_state["cache"] = cache[:, :, :, :sequence_length, :].contiguous()
+
 def load_tts_model() -> None:
     """Load TTS model once and keep in memory."""
     global tts_model, device, sample_rate
 
     tts_model = TTSModel.load_model()
+    
+    # Monkey-patch missing method if needed
+    if not hasattr(TTSModel, "_slice_kv_cache"):
+        logger.info("🔧 Patching TTSModel with missing _slice_kv_cache method")
+        TTSModel._slice_kv_cache = _slice_kv_cache
+
     device = tts_model.device
     sample_rate = getattr(tts_model, "sample_rate", settings.default_sample_rate)
 
@@ -295,16 +327,47 @@ def load_tts_model() -> None:
     load_custom_voices()
 
 
-def _start_audio_producer(queue: Queue, voice_name: str, text: str, temperature: float = 0.7, lsd_decode_steps: int = 2) -> threading.Thread:
+def _start_audio_producer(
+    queue: Queue, 
+    voice_name: str, 
+    text: str, 
+    temperature: float = settings.temperature, 
+    lsd_decode_steps: int = settings.lsd_decode_steps,
+    top_p: float = settings.top_p,
+    repetition_penalty: float = settings.repetition_penalty,
+    model_tier: str = settings.model_tier,
+) -> threading.Thread:
     """Start background thread that generates audio and writes to queue."""
 
     def producer():
-        logger.info(f"Starting audio generation for voice: {voice_name} (temp={temperature}, steps={lsd_decode_steps})")
+        logger.info(f"Starting audio generation for voice: {voice_name} (model={model_tier}, temp={temperature}, steps={lsd_decode_steps}, top_p={top_p}, rep_pen={repetition_penalty})")
         try:
             with MODEL_LOCK:
                 # Apply quality parameters to the global model instance
                 tts_model.temp = temperature
-                tts_model.lsd_decode_steps = lsd_decode_steps
+                tts_model.top_p = top_p
+                tts_model.repetition_penalty = repetition_penalty
+                
+                # Override steps if HD model is requested
+                if "hd" in model_tier:
+                    # Force higher quality for HD, but respect user choice if even higher
+                    tts_model.lsd_decode_steps = max(lsd_decode_steps, 16)
+                else:
+                    tts_model.lsd_decode_steps = lsd_decode_steps
+                
+                # Dynamic device placement
+                if "cuda" in model_tier and torch.cuda.is_available():
+                    if tts_model.device != "cuda":
+                        logger.info(f"⚡ Moving model to CUDA for generation (currently {tts_model.device})")
+                        logger.info(f"FlowLM device before: {next(tts_model.flow_lm.parameters()).device}")
+                        logger.info(f"Mimi device before: {next(tts_model.mimi.parameters()).device}")
+                        tts_model.to("cuda")
+                        logger.info(f"FlowLM device after: {next(tts_model.flow_lm.parameters()).device}")
+                        logger.info(f"Mimi device after: {next(tts_model.mimi.parameters()).device}")
+                else:
+                    if tts_model.device != "cpu":
+                        logger.info(f"🔄 Moving model back to CPU (currently {tts_model.device})")
+                        tts_model.to("cpu")
                 
                 # Check if voice_name is a file path (custom voice)
                 if os.path.exists(voice_name) and os.path.isfile(voice_name):
@@ -340,7 +403,7 @@ def _start_audio_producer(queue: Queue, voice_name: str, text: str, temperature:
             logger.exception(f"Audio generation failed for voice: {voice_name}")
         finally:
             try:
-                queue.put(None, timeout=EOF_TIMEOUT)
+                queue.put(None, timeout=settings.eof_timeout)
             except (Full, Exception):
                 pass
 
@@ -359,9 +422,9 @@ async def _stream_queue_chunks(queue: Queue) -> AsyncIterator[bytes]:
         yield chunk
 
 
-def _start_ffmpeg_process(format: str) -> tuple[subprocess.Popen, int, int]:
+def _start_ffmpeg_process(format: str, speed: float = 1.0) -> tuple[subprocess.Popen, int, int]:
     """Start ffmpeg process with OS pipe for stdin."""
-    out_fmt, codec = FFMPEG_FORMATS.get(format, ("mp3", "libmp3lame"))
+    out_fmt, codec = FFMPEG_FORMATS.get(format, ("wav", "pcm_s16le"))
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -373,9 +436,20 @@ def _start_ffmpeg_process(format: str) -> tuple[subprocess.Popen, int, int]:
         "pipe:0",
     ]
     
+    # Apply high-quality speed adjustment if not 1.0
+    if speed != 1.0:
+        cmd.extend(["-filter:a", f"atempo={speed}"])
+    
+    # Enable experimental encoders (required for 'opus' in some FFmpeg builds)
+    if codec == "opus":
+        cmd.extend(["-strict", "-2"])
+
     # Force 44.1kHz for MP3 to ensure compatibility with Windows MF encoder
     if format == "mp3":
         cmd.extend(["-ar", "44100"])
+        cmd.extend(["-q:a", "0"]) # Best VBR quality
+    elif format in ("aac", "opus"):
+        cmd.extend(["-b:a", "192k"]) # High constant bitrate
 
     cmd.extend([
         "-f",
@@ -387,6 +461,7 @@ def _start_ffmpeg_process(format: str) -> tuple[subprocess.Popen, int, int]:
     r_fd, w_fd = os.pipe()
     r_file = os.fdopen(r_fd, "rb")
     proc = subprocess.Popen(cmd, stdin=r_file, stdout=subprocess.PIPE)
+    r_file.close()
     return proc, w_fd, r_fd
 
 
@@ -416,36 +491,35 @@ def _start_pipe_writer(queue: Queue, write_fd: int) -> threading.Thread:
     return thread
 
 
-import hashlib
-from anyio import open_file, Path
-
-# ... (Previous imports)
-
-
-
 async def _generate_audio_core(
     text: str,
     voice_name: str,
     speed: float,
     format: str,
     chunk_size: int,
-    temperature: float = 0.7,
-    lsd_decode_steps: int = 2,
+    temperature: float = settings.temperature,
+    lsd_decode_steps: int = settings.lsd_decode_steps,
+    top_p: float = settings.top_p,
+    repetition_penalty: float = settings.repetition_penalty,
+    model_tier: str = settings.model_tier,
 ) -> AsyncIterator[bytes]:
     """Internal generator for the actual TTS + FFmpeg logic."""
     queue = Queue(maxsize=settings.queue_size)
     # Using the normalized voice_name passed from wrapper
-    producer_thread = _start_audio_producer(queue, voice_name, text, temperature, lsd_decode_steps)
+    producer_thread = _start_audio_producer(
+        queue, voice_name, text, temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier
+    )
 
     try:
-        if format in ("wav", "pcm"):
+        if format in ("wav", "pcm") and speed == 1.0:
             async for chunk in _stream_queue_chunks(queue):
                 yield chunk
             producer_thread.join()
             return
 
-        if format in FFMPEG_FORMATS:
-            proc, write_fd, _ = _start_ffmpeg_process(format)
+        if format in FFMPEG_FORMATS or (format in ("wav", "pcm") and speed != 1.0):
+            # Transcode or adjust speed
+            proc, write_fd, _ = _start_ffmpeg_process(format, speed)
             writer_thread = _start_pipe_writer(queue, write_fd)
 
             try:
@@ -456,9 +530,14 @@ async def _generate_audio_core(
                         break
                     yield chunk
             finally:
-                proc.wait()
-                producer_thread.join()
-                writer_thread.join()
+                proc.kill()
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+                await asyncio.to_thread(proc.wait)
+                await asyncio.to_thread(producer_thread.join)
+                await asyncio.to_thread(writer_thread.join)
             return
 
         # Fallback
@@ -477,20 +556,29 @@ async def generate_audio(
     speed: float = 1.0,
     format: str = "wav",
     chunk_size: int = settings.chunk_size,
-    temperature: float = 0.7,
-    lsd_decode_steps: int = 2,
+    temperature: float = settings.temperature,
+    lsd_decode_steps: int = settings.lsd_decode_steps,
+    top_p: float = settings.top_p,
+    repetition_penalty: float = settings.repetition_penalty,
+    model_tier: str = settings.model_tier,
     stream: bool = False,
+    background_tasks: Optional[BackgroundTasks] = None,
 ) -> AsyncIterator[bytes]:
     """Generate and stream audio, with filesystem caching."""
     if tts_model is None:
         raise HTTPException(status_code=503, detail="TTS model not loaded")
 
+    # Security Check: Prevent path traversal if voice is not a known preset
+    if voice not in VOICE_MAPPING and ("/" in voice or "\\" in voice or voice == ".."):
+        logger.warning(f"🚨 Path traversal attempt blocked: voice='{voice}'")
+        raise HTTPException(status_code=400, detail="Invalid voice name")
+
     # Normalize voice for cache key
     voice_name = VOICE_MAPPING.get(voice, voice)
     
     # Generate Cache Key
-    # We include text, normalized voice, speed, format, temperature, and steps
-    cache_key = f"{text}|{voice_name}|{format}|{speed}|{temperature}|{lsd_decode_steps}"
+    # We include all parameters that affect output quality or audio content
+    cache_key = f"{text}|{voice_name}|{format}|{speed}|{temperature}|{lsd_decode_steps}|{top_p}|{repetition_penalty}|{model_tier}"
     cache_hash = hashlib.md5(cache_key.encode("utf-8")).hexdigest()
     cache_filename = f"{cache_hash}.{format}"
     cache_path = os.path.join(settings.audio_cache_dir, cache_filename)
@@ -511,12 +599,14 @@ async def generate_audio(
 
     # 2. Generate and Cache (Cache Miss)
     logger.info(f"Cache MISS for {cache_hash} ({format}) - Generating...")
-    temp_path = cache_path + ".tmp"
+    temp_path = f"{cache_path}.{uuid.uuid4().hex}.tmp"
     meta_path = os.path.splitext(cache_path)[0] + ".json"
     
     try:
         async with await open_file(temp_path, "wb") as cache_file:
-            async for chunk in _generate_audio_core(text, voice_name, speed, format, chunk_size, temperature, lsd_decode_steps):
+            async for chunk in _generate_audio_core(
+                text, voice_name, speed, format, chunk_size, temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier
+            ):
                 await cache_file.write(chunk)
                 yield chunk
         
@@ -525,26 +615,33 @@ async def generate_audio(
              os.replace(temp_path, cache_path)
              
              # Save Metadata JSON
-             import json
              metadata = {
                  "text": text,
                  "voice": voice_name,
                  "speed": speed,
                  "format": format,
-                 "hash": cache_hash
+                 "hash": cache_hash,
+                 "model": model_tier,
+                 "top_p": top_p,
+                 "repetition_penalty": repetition_penalty,
+                 "lsd_decode_steps": lsd_decode_steps
              }
+             temp_meta_path = f"{meta_path}.{uuid.uuid4().hex}.tmp"
              try:
-                 async with await open_file(meta_path, "w") as f:
+                 async with await open_file(temp_meta_path, "w") as f:
                      await f.write(json.dumps(metadata, indent=2))
+                 if os.path.exists(temp_meta_path):
+                     os.replace(temp_meta_path, meta_path)
              except Exception as e:
                  logger.warning(f"Failed to save metadata: {e}")
 
              logger.info(f"Cached audio with metadata saved to {cache_path}")
              # Trigger cleanup in background
-             asyncio.create_task(cleanup_cache())
+             if background_tasks:
+                 background_tasks.add_task(cleanup_cache)
              
-    except Exception:
-        # If generation failed, clean up temp files (both audio and json)
+    except BaseException:
+        # If generation failed or was cancelled, clean up temp files (both audio and json)
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
@@ -646,7 +743,7 @@ async def get_formats():
 
 
 @app.post("/v1/audio/speech")
-async def text_to_speech(request: SpeechRequest) -> StreamingResponse:
+async def text_to_speech(request: SpeechRequest, background_tasks: BackgroundTasks) -> StreamingResponse:
     """Generate speech audio from text with streaming response."""
     try:
         logger.info(f"Received request: voice='{request.voice}', format='{request.response_format}', input_len={len(request.input)}")
@@ -659,7 +756,11 @@ async def text_to_speech(request: SpeechRequest) -> StreamingResponse:
                 format=request.response_format,
                 temperature=request.temperature,
                 lsd_decode_steps=request.lsd_decode_steps,
+                top_p=request.top_p,
+                repetition_penalty=request.repetition_penalty,
+                model_tier=request.model,
                 stream=request.stream,
+                background_tasks=background_tasks,
             ),
             media_type=MEDIA_TYPES.get(request.response_format, "audio/wav"),
             headers={
@@ -681,6 +782,12 @@ async def export_voice(request: ExportVoiceRequest):
         raise HTTPException(status_code=503, detail="TTS model not loaded")
     
     voice_name = request.voice
+    
+    # Security Check: Prevent path traversal
+    if "/" in voice_name or "\\" in voice_name or voice_name == "..":
+        logger.warning(f"🚨 Path traversal attempt blocked in export: voice='{voice_name}'")
+        raise HTTPException(status_code=400, detail="Invalid voice name")
+
     wav_path = os.path.join(settings.voices_dir, f"{voice_name}.wav")
     st_path = os.path.join(settings.embeddings_dir, f"{voice_name}.safetensors")
     
@@ -696,7 +803,6 @@ async def export_voice(request: ExportVoiceRequest):
     try:
         logger.info(f"✨ Manually exporting '{voice_name}' to embeddings/ (temp={request.temperature}, steps={request.lsd_decode_steps})...")
         audio, sr = sf.read(wav_path)
-        from pocket_tts.data.audio_utils import convert_audio
         audio_pt = torch.from_numpy(audio).float()
         if len(audio_pt.shape) == 1:
             audio_pt = audio_pt.unsqueeze(0)
@@ -719,7 +825,7 @@ async def export_voice(request: ExportVoiceRequest):
         logger.info(f"✅ Exported '{voice_name}' to {st_path}")
         
         # Reload custom voices to update mapping
-        load_custom_voices()
+        await asyncio.to_thread(load_custom_voices)
         
         return {"status": "success", "message": f"Exported {voice_name} to safetensors", "path": st_path}
     except Exception as e:

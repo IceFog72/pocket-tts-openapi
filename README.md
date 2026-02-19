@@ -58,6 +58,7 @@ To use custom voices, authenticate with HuggingFace:
 
 #### Adding Custom Voices
 1. Place `.wav` files in the `voices/` folder.
+   - **Tip**: For best results, use a clean voice sample that is approximately **10 seconds** long.
 2. Start the server. It will automatically convert WAVs to `.safetensors` in the `embeddings/` folder.
 3. From then on, the voice will load nearly instantly from the embedding!
 4. Use via API: `"voice": "filename"`
@@ -67,6 +68,13 @@ To use custom voices, authenticate with HuggingFace:
 - **Quality Parameters**: You can now control the output quality via the API:
   - `temperature`: Control diversity/naturalness (0.0 to 2.0, default 0.7).
   - `lsd_decode_steps`: Control quality (1 to 50, default 2). Higher is better but slower.
+- **Model Tiers**: You can choose between different performance/quality trade-offs:
+  - `tts-1`: Standard quality, fastest (default).
+  - `tts-1-hd`: High definition quality (automatically increases decode steps).
+  - `tts-1-cuda`: Standard quality using GPU acceleration.
+  - `tts-1-hd-cuda`: High definition quality using GPU acceleration.
+  > [!TIP]
+  > You can set the default tier in `config.ini` under the `[tts]` section.
 
 ### Audio Caching
 - Automatically caches generated files (default limit: 10).

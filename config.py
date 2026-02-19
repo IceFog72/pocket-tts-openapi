@@ -10,7 +10,8 @@ class Settings(BaseSettings):
             'server': 'server',
             'paths': 'paths',
             'cache': 'cache',
-            'audio': 'audio'
+            'audio': 'audio',
+            'tts': 'tts'
         },
         extra='ignore'
     )
@@ -33,6 +34,13 @@ class Settings(BaseSettings):
     eof_timeout: float = 1.0
     chunk_size: int = 32 * 1024
     default_sample_rate: int = 24000 # This will remain a constant, as it's a model property
+
+    # TTS default settings
+    temperature: float = 0.7
+    lsd_decode_steps: int = 2
+    top_p: float = 0.95
+    repetition_penalty: float = 1.1
+    model_tier: str = "tts-1"
 
 
 settings = Settings()
