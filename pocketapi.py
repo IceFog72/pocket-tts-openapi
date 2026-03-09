@@ -356,18 +356,20 @@ def _start_audio_producer(
                     tts_model.lsd_decode_steps = lsd_decode_steps
                 
                 # Dynamic device placement
-                if "cuda" in model_tier and torch.cuda.is_available():
-                    if tts_model.device != "cuda":
-                        logger.info(f"⚡ Moving model to CUDA for generation (currently {tts_model.device})")
-                        logger.info(f"FlowLM device before: {next(tts_model.flow_lm.parameters()).device}")
-                        logger.info(f"Mimi device before: {next(tts_model.mimi.parameters()).device}")
-                        tts_model.to("cuda")
-                        logger.info(f"FlowLM device after: {next(tts_model.flow_lm.parameters()).device}")
-                        logger.info(f"Mimi device after: {next(tts_model.mimi.parameters()).device}")
-                else:
-                    if tts_model.device != "cpu":
-                        logger.info(f"🔄 Moving model back to CPU (currently {tts_model.device})")
-                        tts_model.to("cpu")
+                if torch.cuda.is_available():
+                    if "cuda" in model_tier:
+                        if tts_model.device != "cuda":
+                            logger.info(f"⚡ Moving model to CUDA for generation (currently {tts_model.device})")
+                            logger.info(f"FlowLM device before: {next(tts_model.flow_lm.parameters()).device}")
+                            logger.info(f"Mimi device before: {next(tts_model.mimi.parameters()).device}")
+                            tts_model.to("cuda")
+                            logger.info(f"FlowLM device after: {next(tts_model.flow_lm.parameters()).device}")
+                            logger.info(f"Mimi device after: {next(tts_model.mimi.parameters()).device}")
+                    else:
+                        if tts_model.device != "cpu":
+                            logger.info(f"🔄 Moving model back to CPU (currently {tts_model.device})")
+                            tts_model.to("cpu")
+                            torch.cuda.empty_cache()
                 
                 # Check if voice_name is a file path (custom voice)
                 if os.path.exists(voice_name) and os.path.isfile(voice_name):
