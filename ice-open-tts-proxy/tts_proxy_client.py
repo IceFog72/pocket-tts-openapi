@@ -31,9 +31,12 @@ except ImportError:
     sys.exit(1)
 
 
+from tts_backend import Config
+_config = Config()
+
 # Default URLs
-TTS_SERVER_URL = os.environ.get("TTS_SERVER_URL", "http://localhost:8001")
-GUI_APP_URL = os.environ.get("GUI_APP_URL", "http://127.0.0.1:5000")
+TTS_SERVER_URL = os.environ.get("TTS_SERVER_URL", _config.get("tts_server_url", "http://localhost:8001"))
+GUI_APP_URL = os.environ.get("GUI_APP_URL", f"http://{_config.get('api_host', '127.0.0.1')}:{_config.get('api_port', '8181')}")
 
 
 def check_tts_server(url: str) -> bool:

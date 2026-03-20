@@ -653,19 +653,33 @@ def _slice_kv_cache(self, model_state: dict, sequence_length: int) -> None:
 class FileLikeQueueWriter:
     """File-like adapter that writes bytes to a queue with backpressure."""
 
-    def __init__(self, queue: Queue, timeout: float = settings.queue_timeout):
+    def __init__(self, queue: Queue, timeout: float = 30.0):
         self.queue = queue
         self.timeout = timeout
+        self._pos = 0
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, offset, whence=0):
+        # Dummy seek: we can't actually seek in a queue, but we pretend
+        pass
 
     def write(self, data: bytes) -> int:
         if not data:
             return 0
-        try:
-            self.queue.put(data, timeout=self.timeout)
-            return len(data)
-        except Full:
-            logger.warning("Queue timeout: Client disconnected or too slow.")
-            raise IOError("Queue full - aborting generation")
+        self._pos += len(data)
+        start_time = time.time()
+        while True:
+            if getattr(self.queue, 'abort', False):
+                raise IOError("Generation aborted by client disconnect")
+            try:
+                self.queue.put(data, timeout=1.0)
+                return len(data)
+            except Full:
+                if time.time() - start_time > self.timeout:
+                    logger.warning("Queue timeout: Client disconnected or too slow.")
+                    raise IOError("Queue full - aborting generation")
 
     def flush(self) -> None:
         pass
@@ -732,7 +746,8 @@ def _start_audio_producer(
                         tts_model.to("cpu")
                         model_manager._device = "cpu"
                 
-                if os.path.exists(voice_name) and os.path.isfile(voice_name):
+                is_safe_file = os.path.isabs(voice_name)
+                if os.path.exists(voice_name) and os.path.isfile(voice_name) and is_safe_file:
                     file_ext = os.path.splitext(voice_name)[1].lower()
                     if file_ext == ".safetensors":
                         logger.debug(f"Loading pre-exported voice embedding: {voice_name}")
@@ -751,12 +766,30 @@ def _start_audio_producer(
                 else:
                     model_state = tts_model.get_state_for_audio_prompt(voice_name)
                 
-                audio_chunks = tts_model.generate_audio_stream(
-                    model_state=model_state, text_to_generate=text
-                )
+                # Split text into manageable sentences/clauses (threshold ~500 chars)
+                import re
+                parts = re.split(r'(?<=[.!?])\s+', text.strip())
+                
+                def combined_chunks():
+                    for part in parts:
+                        if not part.strip(): continue
+                        
+                        # Sub-split long sentences by comma/semicolon for safety
+                        if len(part) > 500:
+                            subtasks = re.split(r'(?<=[,;])\s+', part)
+                        else:
+                            subtasks = [part]
+                            
+                        for subtask in subtasks:
+                            if not subtask.strip(): continue
+                            for chunk in tts_model.generate_audio_stream(
+                                model_state=model_state, text_to_generate=subtask
+                            ):
+                                yield chunk
+
                 with FileLikeQueueWriter(queue) as writer:
                     stream_audio_chunks(
-                        writer, audio_chunks, model_manager.sample_rate
+                        writer, combined_chunks(), model_manager.sample_rate
                     )
             finally:
                 model_manager.release_lock()
@@ -823,7 +856,7 @@ def _start_ffmpeg_process(format: str, speed: float = 1.0) -> Tuple[subprocess.P
     
     r_fd, w_fd = os.pipe()
     r_file = os.fdopen(r_fd, "rb")
-    proc = subprocess.Popen(cmd, stdin=r_file, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdin=r_file, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     r_file.close()
     return proc, w_fd, r_fd
 
@@ -867,6 +900,7 @@ async def _generate_audio_core(
 ) -> AsyncIterator[bytes]:
     """Internal generator for the actual TTS + FFmpeg logic."""
     queue = Queue(maxsize=settings.queue_size)
+    queue.abort = False
     producer_thread = _start_audio_producer(
         queue, voice_name, text, temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier
     )
@@ -925,6 +959,11 @@ async def _generate_audio_core(
     except Exception as e:
         logger.exception(f"Error streaming audio format {format}: {e}")
         raise
+    finally:
+        queue.abort = True
+        while not queue.empty():
+            try: queue.get_nowait()
+            except Exception: break
 
 
 # ============================================================================
@@ -958,7 +997,13 @@ async def generate_audio(
         logger.warning(f"Invalid voice name rejected: '{voice}'")
         raise HTTPException(status_code=400, detail="Invalid voice name")
     
-    voice_name = VOICE_MAPPING.get(voice, voice)
+    # Case-insensitive lookup for OpenAI aliases or predefined voices
+    v_lower = voice.lower()
+    if v_lower in VOICE_MAPPING:
+        voice_name = VOICE_MAPPING[v_lower]
+    else:
+        # Fallback to exact match (for paths)
+        voice_name = VOICE_MAPPING.get(voice, voice)
     
     cache_hash = cache_manager.generate_cache_key(
         text, voice_name, format, speed, temperature, 
@@ -1020,8 +1065,8 @@ async def generate_audio(
                 except OSError:
                     pass
         raise HTTPException(status_code=500, detail=f"Audio generation failed: {str(e)}")
-    except Exception as e:
-        logger.exception(f"Unexpected error during audio generation")
+    except (Exception, asyncio.CancelledError) as e:
+        logger.exception(f"Unexpected error during audio generation (or client cancelled)")
         for path in [temp_path, meta_path, cache_path]:
             if os.path.exists(path):
                 try:
@@ -1108,7 +1153,11 @@ app.add_middleware(
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     """Apply rate limiting to all requests."""
-    client_ip = request.client.host if request.client else "unknown"
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        client_ip = forwarded.split(',')[0].strip()
+    else:
+        client_ip = request.client.host if request.client else "unknown"
     
     is_allowed, retry_after = rate_limiter.is_allowed(client_ip)
     if not is_allowed:
@@ -1212,7 +1261,7 @@ async def export_voice(request: ExportVoiceRequest):
                 audio_pt = audio_pt[..., :max_samples]
                 logger.debug(f"Audio truncated to 30s for export")
 
-        audio_resampled = convert_audio(audio_pt, sr, model_manager._model.config.mimi.sample_rate, 1)
+        audio_resampled = convert_audio(audio_pt, sr, model_manager.sample_rate, 1)
         
         model_manager.acquire_lock()
         try:

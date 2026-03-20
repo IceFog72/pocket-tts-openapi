@@ -15,6 +15,7 @@ import threading
 import time
 from unittest.mock import patch, MagicMock, Mock, call
 from pathlib import Path
+import requests
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -25,19 +26,19 @@ class TestConfig(unittest.TestCase):
     
     def test_default_config(self):
         """Test default configuration values."""
-        from ice_open_tts_proxy import Config, DEFAULT_CONFIG
+        from tts_backend import Config
         
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = os.path.join(tmpdir, "config.json")
             config = Config(config_path)
             
-            self.assertEqual(config.get("tts_server_url"), DEFAULT_CONFIG["tts_server_url"])
-            self.assertEqual(config.get("api_port"), DEFAULT_CONFIG["api_port"])
-            self.assertEqual(config.get("default_voice"), DEFAULT_CONFIG["default_voice"])
+            self.assertEqual(config.get("tts_server_url"), "http://localhost:8001")
+            self.assertEqual(config.get("api_port"), "8181")
+            self.assertEqual(config.get("default_voice"), "nova")
     
     def test_config_save_load(self):
         """Test saving and loading configuration."""
-        from ice_open_tts_proxy import Config
+        from tts_backend import Config
         
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = os.path.join(tmpdir, "config.json")
@@ -48,11 +49,11 @@ class TestConfig(unittest.TestCase):
             
             config2 = Config(config_path)
             self.assertEqual(config2.get("default_voice"), "Carlotta")
-            self.assertEqual(config2.get("speed"), 1.5)
+            self.assertEqual(float(config2.get("speed")), 1.5)
     
     def test_config_get_with_default(self):
         """Test config get with default value."""
-        from ice_open_tts_proxy import Config
+        from tts_backend import Config
         
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = os.path.join(tmpdir, "config.json")
@@ -65,10 +66,10 @@ class TestConfig(unittest.TestCase):
 class TestTTSClient(unittest.TestCase):
     """Test TTS client functionality."""
     
-    @patch('ice_open_tts_proxy.requests.get')
+    @patch('requests.get')
     def test_health_check_success(self, mock_get):
         """Test successful health check."""
-        from ice_open_tts_proxy import TTSClient
+        from tts_backend import TTSClient
         
         mock_get.return_value.status_code = 200
         mock_get.return_value.json.return_value = {"status": "ok"}
@@ -76,20 +77,20 @@ class TestTTSClient(unittest.TestCase):
         client = TTSClient("http://localhost:8001")
         self.assertTrue(client.health_check())
     
-    @patch('ice_open_tts_proxy.requests.get')
+    @patch('requests.get')
     def test_health_check_failure(self, mock_get):
         """Test failed health check."""
-        from ice_open_tts_proxy import TTSClient
+        from tts_backend import TTSClient
         
         mock_get.side_effect = Exception("Connection refused")
         
         client = TTSClient("http://localhost:8001")
         self.assertFalse(client.health_check())
     
-    @patch('ice_open_tts_proxy.requests.get')
+    @patch('requests.get')
     def test_get_voices(self, mock_get):
         """Test getting voices list."""
-        from ice_open_tts_proxy import TTSClient
+        from tts_backend import TTSClient
         
         mock_get.return_value.status_code = 200
         mock_get.return_value.json.return_value = {
@@ -102,10 +103,10 @@ class TestTTSClient(unittest.TestCase):
         self.assertEqual(len(voices), 4)
         self.assertIn("Carlotta", voices)
     
-    @patch('ice_open_tts_proxy.requests.get')
+    @patch('requests.get')
     def test_get_voices_error_returns_defaults(self, mock_get):
         """Test getting voices with error returns defaults."""
-        from ice_open_tts_proxy import TTSClient
+        from tts_backend import TTSClient
         
         mock_get.side_effect = Exception("Connection error")
         
@@ -115,10 +116,10 @@ class TestTTSClient(unittest.TestCase):
         self.assertIn("nova", voices)
         self.assertIn("alloy", voices)
     
-    @patch('ice_open_tts_proxy.requests.post')
+    @patch('requests.post')
     def test_generate_speech(self, mock_post):
         """Test speech generation."""
-        from ice_open_tts_proxy import TTSClient
+        from tts_backend import TTSClient
         
         audio_data = b"fake audio data"
         mock_post.return_value.status_code = 200
@@ -130,10 +131,10 @@ class TestTTSClient(unittest.TestCase):
         self.assertEqual(result, audio_data)
         mock_post.assert_called_once()
     
-    @patch('ice_open_tts_proxy.requests.post')
+    @patch('requests.post')
     def test_generate_speech_error_returns_none(self, mock_post):
         """Test speech generation error."""
-        from ice_open_tts_proxy import TTSClient
+        from tts_backend import TTSClient
         
         mock_post.side_effect = Exception("Server error")
         
@@ -142,10 +143,10 @@ class TestTTSClient(unittest.TestCase):
         
         self.assertIsNone(result)
     
-    @patch('ice_open_tts_proxy.requests.post')
+    @patch('requests.post')
     def test_generate_speech_parameters(self, mock_post):
         """Test speech generation sends correct parameters."""
-        from ice_open_tts_proxy import TTSClient
+        from tts_backend import TTSClient
         
         mock_post.return_value.status_code = 200
         mock_post.return_value.content = b"audio"
@@ -158,135 +159,6 @@ class TestTTSClient(unittest.TestCase):
         self.assertEqual(call_args[1]["json"]["voice"], "Carlotta")
         self.assertEqual(call_args[1]["json"]["speed"], 1.5)
         self.assertEqual(call_args[1]["json"]["response_format"], "mp3")
-
-
-class TestStreamingTTS(unittest.TestCase):
-    """Test streaming TTS functionality."""
-    
-    def test_streaming_text_buffer_initialization(self):
-        """Test streaming text buffer initialization."""
-        from ice_open_tts_proxy import LiveTextBuffer
-        
-        buffer = LiveTextBuffer()
-        self.assertEqual(buffer.text, "")
-        self.assertEqual(buffer.word_count, 0)
-    
-    def test_streaming_text_buffer_add_text(self):
-        """Test adding text to streaming buffer."""
-        from ice_open_tts_proxy import LiveTextBuffer
-        
-        buffer = LiveTextBuffer()
-        buffer.add_text("Hello")
-        self.assertEqual(buffer.text, "Hello")
-        
-        buffer.add_text(" world")
-        self.assertEqual(buffer.text, "Hello world")
-    
-    def test_streaming_text_buffer_get_words(self):
-        """Test getting complete words from buffer."""
-        from ice_open_tts_proxy import LiveTextBuffer
-        
-        buffer = LiveTextBuffer()
-        buffer.add_text("Hello world ")
-        words = buffer.get_complete_words()
-        self.assertGreater(len(words), 0)
-    
-    def test_streaming_text_buffer_get_remaining(self):
-        """Test getting remaining text."""
-        from ice_open_tts_proxy import LiveTextBuffer
-        
-        buffer = LiveTextBuffer()
-        buffer.add_text("Hello world")
-        words = buffer.get_complete_words()  # "Hello world" with no space won't be extracted
-        remaining = buffer.get_remaining_text()
-        # If no complete words extracted, entire text remains
-        self.assertIsNotNone(remaining)
-    
-    def test_streaming_text_buffer_clear(self):
-        """Test clearing streaming buffer."""
-        from ice_open_tts_proxy import LiveTextBuffer
-        
-        buffer = LiveTextBuffer()
-        buffer.add_text("Hello world")
-        buffer.clear()
-        self.assertEqual(buffer.text, "")
-        self.assertEqual(buffer.word_count, 0)
-    
-    def test_live_tts_manager_initialization(self):
-        """Test live TTS manager initialization."""
-        from ice_open_tts_proxy import LiveTTSManager, AudioPlayer
-
-        mock_client = MagicMock()
-        audio_player = AudioPlayer()
-        manager = LiveTTSManager(mock_client, audio_player)
-
-        self.assertFalse(manager.is_active)
-
-    def test_live_tts_manager_start_stop(self):
-        """Test starting and stopping live TTS manager."""
-        from ice_open_tts_proxy import LiveTTSManager, AudioPlayer
-
-        mock_client = MagicMock()
-        audio_player = AudioPlayer()
-        manager = LiveTTSManager(mock_client, audio_player)
-
-        manager.start()
-        self.assertTrue(manager.is_active)
-
-        manager.stop()
-        self.assertFalse(manager.is_active)
-
-    def test_live_tts_manager_set_voice_speed(self):
-        """Test updating voice and speed."""
-        from ice_open_tts_proxy import LiveTTSManager, AudioPlayer
-
-        mock_client = MagicMock()
-        audio_player = AudioPlayer()
-        manager = LiveTTSManager(mock_client, audio_player)
-
-        manager.set_voice("Carlotta")
-        self.assertEqual(manager.voice, "Carlotta")
-
-        manager.set_speed(1.5)
-        self.assertEqual(manager.speed, 1.5)
-
-    @patch('ice_open_tts_proxy.requests.post')
-    def test_live_tts_manager_stream_word(self, mock_post):
-        """Test live TTS streaming a single word."""
-        from ice_open_tts_proxy import LiveTTSManager, AudioPlayer
-
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.content = b"fake audio"
-
-        mock_client = MagicMock()
-        mock_client.generate_speech.return_value = b"fake audio"
-
-        audio_player = AudioPlayer()
-        manager = LiveTTSManager(mock_client, audio_player)
-        manager.min_words = 1  # Set after initialization
-        manager.start()
-
-        manager.stream_word("Hello ")
-        time.sleep(0.3)
-
-        self.assertTrue(True)  # No exception = pass
-        manager.stop()
-
-    def test_live_tts_manager_double_start(self):
-        """Test that double start doesn't create multiple threads."""
-        from ice_open_tts_proxy import LiveTTSManager, AudioPlayer
-
-        mock_client = MagicMock()
-        audio_player = AudioPlayer()
-        manager = LiveTTSManager(mock_client, audio_player)
-        
-        manager.start()
-        first_thread = manager.worker_thread
-        
-        manager.start()  # Should not start again
-        self.assertEqual(manager.worker_thread, first_thread)
-        
-        manager.stop()
 
 
 class TestAudioPlayer(unittest.TestCase):
@@ -344,7 +216,7 @@ class TestAPIServer(unittest.TestCase):
 class TestCLIClient(unittest.TestCase):
     """Test CLI client functionality."""
     
-    @patch('ice_open_tts_proxy_cli.requests.get')
+    @patch('requests.get')
     def test_check_status_server_up(self, mock_get):
         """Test checking TTS server when it's up."""
         from ice_open_tts_proxy_cli import check_status
@@ -358,7 +230,7 @@ class TestCLIClient(unittest.TestCase):
         result = check_status("http://localhost:8001")
         self.assertTrue(result)
     
-    @patch('ice_open_tts_proxy_cli.requests.get')
+    @patch('requests.get')
     def test_check_status_server_down(self, mock_get):
         """Test checking TTS server when it's down."""
         from ice_open_tts_proxy_cli import check_status
@@ -368,7 +240,7 @@ class TestCLIClient(unittest.TestCase):
         result = check_status("http://localhost:8001")
         self.assertFalse(result)
     
-    @patch('ice_open_tts_proxy_cli.requests.post')
+    @patch('requests.post')
     def test_generate_speech_cli(self, mock_post):
         """Test CLI speech generation."""
         from ice_open_tts_proxy_cli import generate_speech
@@ -391,7 +263,7 @@ class TestCLIClient(unittest.TestCase):
             with open(output_file, "rb") as f:
                 self.assertEqual(f.read(), b"fake audio")
     
-    @patch('ice_open_tts_proxy_cli.requests.post')
+    @patch('requests.post')
     def test_generate_speech_creates_default_output(self, mock_post):
         """Test CLI creates default output file."""
         from ice_open_tts_proxy_cli import generate_speech
@@ -415,7 +287,7 @@ class TestCLIClient(unittest.TestCase):
             finally:
                 os.chdir(original_cwd)
     
-    @patch('ice_open_tts_proxy_cli.requests.post')
+    @patch('requests.post')
     def test_speak(self, mock_post):
         """Test sending speak request to proxy."""
         from ice_open_tts_proxy_cli import speak
@@ -428,7 +300,7 @@ class TestCLIClient(unittest.TestCase):
         
         speak(text="Hello", voice="nova", speed=1.0, proxy_url="http://127.0.0.1:5000")
     
-    @patch('ice_open_tts_proxy_cli.requests.post')
+    @patch('requests.post')
     def test_speak_error_handling(self, mock_post):
         """Test speak with error prints error message."""
         from ice_open_tts_proxy_cli import speak
@@ -452,7 +324,7 @@ class TestCLIClient(unittest.TestCase):
 class TestCLIListVoices(unittest.TestCase):
     """Test CLI list voices functionality."""
     
-    @patch('ice_open_tts_proxy_cli.requests.get')
+    @patch('requests.get')
     def test_list_voices(self, mock_get):
         """Test listing voices."""
         from ice_open_tts_proxy_cli import list_voices
@@ -464,7 +336,7 @@ class TestCLIListVoices(unittest.TestCase):
         
         list_voices("http://localhost:8001")
     
-    @patch('ice_open_tts_proxy_cli.requests.get')
+    @patch('requests.get')
     def test_list_voices_error(self, mock_get):
         """Test listing voices with error."""
         from ice_open_tts_proxy_cli import list_voices
@@ -503,34 +375,6 @@ class TestAudioBackend(unittest.TestCase):
         self.assertIsInstance(result, bool)
 
 
-class TestGUIConstants(unittest.TestCase):
-    """Test GUI constants and defaults."""
-    
-    def test_default_config_values(self):
-        """Test default configuration values."""
-        from ice_open_tts_proxy import DEFAULT_CONFIG
-        
-        self.assertEqual(DEFAULT_CONFIG["tts_server_url"], "http://localhost:8001")
-        self.assertEqual(DEFAULT_CONFIG["api_host"], "127.0.0.1")
-        self.assertEqual(DEFAULT_CONFIG["api_port"], 5000)
-        self.assertEqual(DEFAULT_CONFIG["default_voice"], "nova")
-        self.assertEqual(DEFAULT_CONFIG["speed"], 1.0)
-        self.assertEqual(DEFAULT_CONFIG["format"], "wav")
-    
-    def test_voices_list_on_error(self):
-        """Test default voices returned on error."""
-        from ice_open_tts_proxy import TTSClient
-        
-        with patch('ice_open_tts_proxy.requests.get') as mock_get:
-            mock_get.side_effect = Exception("No server")
-            client = TTSClient("http://localhost:8001")
-            voices = client.get_voices()
-            
-            self.assertIn("nova", voices)
-            self.assertIn("alloy", voices)
-            self.assertIn("echo", voices)
-
-
 class TestIntegration(unittest.TestCase):
     """Integration tests (require TTS server)."""
     
@@ -540,7 +384,7 @@ class TestIntegration(unittest.TestCase):
     )
     def test_full_workflow(self):
         """Test full workflow with real server."""
-        from ice_open_tts_proxy import TTSClient
+        from tts_backend import TTSClient
         
         client = TTSClient("http://localhost:8001")
         
@@ -559,11 +403,11 @@ class TestIntegration(unittest.TestCase):
     )
     def test_live_tts_integration(self):
         """Test live TTS with real server."""
-        from ice_open_tts_proxy import TTSClient, LiveTTSManager, AudioPlayer
+        from tts_backend import TTSClient, OpenAITTSStreamingManager, AudioPlayer
 
         client = TTSClient("http://localhost:8001")
         audio_player = AudioPlayer()
-        manager = LiveTTSManager(client, "nova", 1.0, audio_player)
+        manager = OpenAITTSStreamingManager(client, "nova", 1.0, audio_player)
         manager.min_words = 1
 
         manager.start()
@@ -578,7 +422,7 @@ class TestIntegration(unittest.TestCase):
 class TestCLIEndpoints(unittest.TestCase):
     """Test CLI endpoint functions."""
     
-    @patch('ice_open_tts_proxy_cli.requests.get')
+    @patch('requests.get')
     def test_check_gui_app_up(self, mock_get):
         """Test checking GUI app when it's up."""
         from ice_open_tts_proxy_cli import check_status
@@ -588,7 +432,7 @@ class TestCLIEndpoints(unittest.TestCase):
         # Should not raise
         check_status("http://localhost:8001", "http://127.0.0.1:5000")
     
-    @patch('ice_open_tts_proxy_cli.requests.get')
+    @patch('requests.get')
     def test_check_gui_app_down(self, mock_get):
         """Test checking GUI app when it's down."""
         from ice_open_tts_proxy_cli import check_status
@@ -647,9 +491,10 @@ class TestOpenAIEndpoints(unittest.TestCase):
         self.mock_tts_url = "http://localhost:8001"
         self.sample_audio = b"FAKE_WAV_AUDIO_DATA" * 100
 
-    @patch('ice_open_tts_proxy_cli.requests.post')
+    @patch('requests.post')
     def test_openai_speech_basic(self, mock_post):
         """Test basic OpenAI TTS endpoint returns audio."""
+        import requests
         import requests
         import ice_open_tts_proxy_cli as cli_module
         from flask import Flask
@@ -699,7 +544,7 @@ class TestOpenAIEndpoints(unittest.TestCase):
             self.assertEqual(response.content_type, 'audio/mp3')
             self.assertGreater(len(response.data), 0)
 
-    @patch('ice_open_tts_proxy_cli.requests.post')
+    @patch('requests.post')
     def test_openai_speech_streaming(self, mock_post):
         """Test OpenAI TTS endpoint with streaming enabled (AI agent scenario)."""
         import requests
@@ -717,6 +562,7 @@ class TestOpenAIEndpoints(unittest.TestCase):
 
         @app.route('/v1/audio/speech', methods=['POST'])
         def openai_speech():
+            import requests
             from flask import request, Response
             data = request.get_json() or {}
             text = data.get('input', '')
@@ -775,7 +621,7 @@ class TestOpenAIEndpoints(unittest.TestCase):
             data = response.get_json()
             self.assertIn('error', data)
 
-    @patch('ice_open_tts_proxy_cli.requests.post')
+    @patch('requests.post')
     def test_openai_speech_openai_sdk_format(self, mock_post):
         """Test endpoint handles OpenAI SDK request format."""
         from flask import Flask
@@ -790,6 +636,7 @@ class TestOpenAIEndpoints(unittest.TestCase):
 
         @app.route('/v1/audio/speech', methods=['POST'])
         def openai_speech():
+            import requests
             from flask import request, Response
             data = request.get_json() or {}
             # Handle both 'input' (OpenAI) and 'text' formats
@@ -815,7 +662,7 @@ class TestOpenAIEndpoints(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn('audio/mp3', response.content_type)
 
-    @patch('ice_open_tts_proxy_cli.requests.post')
+    @patch('requests.post')
     def test_agent_send_scenario(self, mock_post):
         """Test AI agent send scenario: agent sends TTS request and gets streaming audio."""
         import time
@@ -839,6 +686,7 @@ class TestOpenAIEndpoints(unittest.TestCase):
 
         @app.route('/v1/audio/speech', methods=['POST'])
         def openai_speech():
+            import requests
             from flask import request, Response
             data = request.get_json() or {}
             text = data.get('input', '')

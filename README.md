@@ -35,7 +35,7 @@ To get the latest version of the project:
 - **Windows**: Run `update.bat`
 - **Linux**: Run `./update.sh`
 
-**Server runs at** `http://localhost:8001` (or next available port)
+**Server runs at** `http://localhost:8005` (or next available port)
 
 ## Features
 
@@ -68,6 +68,7 @@ To use custom voices, authenticate with HuggingFace:
 - **Quality Parameters**: You can now control the output quality via the API:
   - `temperature`: Control diversity/naturalness (0.0 to 2.0, default 0.7).
   - `lsd_decode_steps`: Control quality (1 to 50, default 2). Higher is better but slower.
+- **Large Block Handling**: The server automatically splits large text (over 500 characters) into sentences and streams them sequentially, avoiding "Maximum generation length" errors.
 - **Model Tiers**: You can choose between different performance/quality trade-offs:
   - `tts-1`: Standard quality, fastest (default).
   - `tts-1-hd`: High definition quality (automatically increases decode steps).
@@ -77,7 +78,7 @@ To use custom voices, authenticate with HuggingFace:
   > You can set the default tier in `config.ini` under the `[tts]` section.
 
 ### Audio Caching
-- Automatically caches generated files (default limit: 10).
+- Automatically caches generated files (default limit: 50).
 - Cache keys include voice, text, and quality parameters (changing temperature/steps triggers fresh generation).
 - Cache hit = instant response.
 
@@ -88,7 +89,7 @@ OpenAI-compatible endpoint for generating speech.
 
 **Example:**
 ```bash
-curl http://localhost:8001/v1/audio/speech \
+curl http://localhost:8005/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "input": "Hello! This is high quality audio.",

@@ -12,6 +12,7 @@ import argparse
 import queue
 import time
 import logging
+import configparser
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 
@@ -19,58 +20,79 @@ from typing import Optional, Dict, Any, Callable
 # Configuration
 # =============================================================================
 
-DEFAULT_CONFIG = {
-    "tts_server_url": "http://localhost:8001",
-    "api_port": 5000,
-    "api_host": "127.0.0.1",
-    "default_voice": "nova",
-    "default_speed": 1.0,
-}
-
 class Config:
-    """Configuration management."""
+    """Configuration manager using INI file in the same directory as the script."""
     
     def __init__(self, config_path: Optional[str] = None):
-        self.config_path = config_path or self._get_default_config_path()
-        self.config = self._load_config()
-    
-    def _get_default_config_path(self) -> str:
-        """Get default configuration file path."""
-        return str(Path.home() / ".ice_open_tts_proxy_config.json")
-    
-    def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file or create default."""
-        if os.path.exists(self.config_path):
+        if config_path is None:
+            # Determine the directory of this script
             try:
-                with open(self.config_path, 'r') as f:
-                    config = json.load(f)
-                # Merge with defaults to ensure all keys exist
-                merged_config = DEFAULT_CONFIG.copy()
-                merged_config.update(config)
-                return merged_config
-            except Exception as e:
-                print(f"Warning: Could not load config file: {e}")
-                print("Using default configuration.")
-                return DEFAULT_CONFIG.copy()
-        else:
-            # No config file, use defaults
-            return DEFAULT_CONFIG.copy()
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+            except NameError:
+                # Fallback to current working directory
+                script_dir = os.getcwd()
+            config_path = os.path.join(script_dir, "config.ini")
+        self.config_path = config_path
+        self.parser = configparser.ConfigParser()
+        if not os.path.exists(self.config_path):
+            self._create_default()
+        self.parser.read(self.config_path)
     
-    def save(self):
-        """Save current configuration to file."""
-        try:
-            with open(self.config_path, 'w') as f:
-                json.dump(self.config, f, indent=2)
-        except Exception as e:
-            print(f"Warning: Could not save config file: {e}")
+    def _create_default(self):
+        """Create a default configuration file."""
+        self.parser['server'] = {
+            'tts_server_url': 'http://localhost:8001',
+            'api_host': '127.0.0.1',
+            'api_port': '8181',
+            'default_voice': 'nova',
+            'speed': '1.0',
+            'format': 'wav'
+        }
+        # Also add a section for logging if needed
+        self.parser['logging'] = {
+            'enabled': 'False',
+            'level': 'INFO'
+        }
+        with open(self.config_path, 'w') as f:
+            self.parser.write(f)
     
     def get(self, key: str, default=None):
-        """Get configuration value."""
-        return self.config.get(key, default)
+        """Get a configuration value as a string."""
+        try:
+            return self.parser.get('server', key)
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return default
+    
+    def getint(self, key: str, default=0):
+        """Get a configuration value as an integer."""
+        try:
+            return self.parser.getint('server', key)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            return default
+    
+    def getfloat(self, key: str, default=0.0):
+        """Get a configuration value as a float."""
+        try:
+            return self.parser.getfloat('server', key)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            return default
+    
+    def getboolean(self, key: str, default=False):
+        """Get a configuration value as a boolean."""
+        try:
+            return self.parser.getboolean('server', key)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            return default
     
     def set(self, key: str, value):
-        """Set configuration value."""
-        self.config[key] = value
+        """Set a configuration value and save to file."""
+        self.parser.set('server', key, str(value))
+        self.save()
+    
+    def save(self):
+        """Save the configuration to the INI file."""
+        with open(self.config_path, 'w') as f:
+            self.parser.write(f)
 
 # =============================================================================
 # TTS Client
@@ -174,24 +196,62 @@ def get_pid_on_port(port: int):
         pass
     return None
 
+def get_process_name(pid: str) -> Optional[str]:
+    """Get process name given a PID."""
+    import subprocess
+    try:
+        if sys.platform == "win32":
+            # Use tasklist to get the image name
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True
+            )
+            lines = result.stdout.strip().split('\n')
+            # Skip the header lines
+            if len(lines) >= 3:
+                # The process name is in the first column of the third line
+                parts = lines[2].split()
+                if parts:
+                    return parts[0]
+        else:
+            # Linux/macOS: use ps
+            result = subprocess.run(
+                ["ps", "-p", pid, "-o", "comm="], capture_output=True, text=True
+            )
+            name = result.stdout.strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return None
+
 def handle_port_conflict(port: int, service_name: str = "Service") -> int:
     """Handle port conflict by prompting user for action."""
     if not check_port_in_use(port):
         return port
     
     pid = get_pid_on_port(port)
-    print(f"Port {port} is already in use by {service_name}.")
+    proc_name = get_process_name(pid) if pid else None
+    display_name = proc_name if proc_name else service_name
+    print(f"Port {port} is already in use by {display_name}.")
     if pid:
         print(f"  PID: {pid}")
     
+    is_our_app = False
+    if proc_name and any(kw in proc_name.lower() for kw in ["python", "pocket", "ice"]):
+        is_our_app = True
+
     print("Options:")
-    print("  1. Kill the existing process and use this port")
+    if is_our_app:
+        print("  1. Kill the existing process and use this port (Restart Server)")
     print("  2. Use a different port")
     print("  3. Exit")
     
     while True:
-        choice = input("Enter choice (1-3): ").strip()
+        choice = input("Enter choice: ").strip()
         if choice == "1":
+            if not is_our_app:
+                print("Invalid choice (kill restricted for external processes).")
+                continue
             if pid:
                 try:
                     if sys.platform == "win32":

@@ -123,9 +123,12 @@ def handle_port_conflict(port: int, script_name: str = "server") -> int:
         sys.exit(1)
 
 
+from tts_backend import Config
+_config = Config()
+
 # Defaults
-TTS_SERVER = os.environ.get("TTS_SERVER", "http://localhost:8001")
-PROXY_SERVER = os.environ.get("PROXY_SERVER", "http://127.0.0.1:8080")
+TTS_SERVER = os.environ.get("TTS_SERVER", _config.get("tts_server_url", "http://localhost:8001"))
+PROXY_SERVER = os.environ.get("PROXY_SERVER", f"http://{_config.get('api_host', '127.0.0.1')}:{_config.get('api_port', '8181')}")
 
 
 def check_status(tts_url: str, proxy_url: str = None) -> bool:
@@ -411,8 +414,8 @@ Examples:
     # Server config
     parser.add_argument("--tts-url", default=TTS_SERVER, help="TTS server URL")
     parser.add_argument("--proxy-url", default=PROXY_SERVER, help="Proxy server URL")
-    parser.add_argument("--host", default="127.0.0.1", help="Server host")
-    parser.add_argument("--port", type=int, default=5000, help="Server port")
+    parser.add_argument("--host", default=_config.get("api_host", "127.0.0.1"), help="Server host")
+    parser.add_argument("--port", type=int, default=_config.getint("api_port", 5000), help="Server port")
     parser.add_argument("--feed", action="store_true", help="Show request feed in real-time (server mode only)")
     
     # Logging

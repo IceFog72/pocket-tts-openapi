@@ -7,7 +7,7 @@ Instructions for AI coding agents (Claude, Codex, Gemini, etc.) to use Ice Open 
 ### Check if Proxy is Running
 
 ```bash
-curl -s http://127.0.0.1:5000/health
+curl -s http://127.0.0.1:8181/health
 ```
 
 Expected response:
@@ -19,7 +19,7 @@ Expected response:
 
 ```bash
 # Basic - generates and plays audio
-curl -X POST http://127.0.0.1:5000/speak \
+curl -X POST http://127.0.0.1:8181/speak \
   -H "Content-Type: application/json" \
   -d '{"text": "Task completed successfully", "voice": "nova"}'
 ```
@@ -42,7 +42,7 @@ def speak_to_user(text: str) -> bool:
     """Speak text to user via TTS proxy."""
     try:
         response = requests.post(
-            "http://127.0.0.1:5000/speak",
+            "http://127.0.0.1:8181/speak",
             json={"text": text, "voice": "nova", "speed": 1.0},
             timeout=10
         )
@@ -107,7 +107,8 @@ POST /speak
 ### Available Voices
 
 **Standard:** nova, alloy, echo, fable, onyx, shimmer  
-**Custom:** Aemeath, Carlotta (or any in server's voices/ folder)
+**Native:** alba, marius, javert, jean, fantine, cosette, eponine, azelma
+**Custom:** Any .wav file in the server's voices/ folder
 
 ## Response Format
 
@@ -150,7 +151,7 @@ def speak_cli(text: str, voice: str = "nova"):
 ```bash
 # One-liner to speak text
 speak() {
-    curl -s -X POST http://127.0.0.1:5000/speak \
+    curl -s -X POST http://127.0.0.1:8181/speak \
         -H "Content-Type: application/json" \
         -d "{\"text\": \"$1\", \"voice\": \"${2:-nova}\"}"
 }
@@ -179,7 +180,7 @@ def safe_speak(text: str, voice: str = "nova") -> dict:
     
     try:
         response = requests.post(
-            "http://127.0.0.1:5000/speak",
+            "http://127.0.0.1:8181/speak",
             json={"text": text, "voice": voice},
             timeout=30
         )
@@ -198,8 +199,8 @@ def safe_speak(text: str, voice: str = "nova") -> dict:
 
 ```bash
 # Check and start if not running
-if ! curl -s http://127.0.0.1:5000/health > /dev/null 2>&1; then
-    cd /path/to/test && ./start_ice_cli.sh 5000 &
+if ! curl -s http://127.0.0.1:8181/health > /dev/null 2>&1; then
+    cd /path/to/test && ./start_ice_cli.sh 8181 &
     sleep 5
 fi
 ```
@@ -208,8 +209,8 @@ fi
 
 | Environment | URL |
 |-------------|-----|
-| Local | http://127.0.0.1:5000 |
-| LAN | http://[your-ip]:5000 |
+| Local | http://127.0.0.1:8181 |
+| LAN | http://[your-ip]:8181 |
 
 ## Best Practices
 
@@ -217,14 +218,14 @@ fi
 2. **Keep text short** (under 100 words)
 3. **Use consistent voice** for same type of message
 4. **Handle errors gracefully** - don't crash if TTS fails
-5. **Don't spam** - rate limit is 30 requests/minute
+5. **Don't spam** - rate limit is 120 requests/minute (increased for Live Mode)
 
 ## Example: Task Agent
 
 ```python
 class TaskAgent:
     def __init__(self):
-        self.proxy_url = "http://127.0.0.1:5000"
+        self.proxy_url = "http://127.0.0.1:8181"
     
     def is_ready(self) -> bool:
         """Check if TTS proxy is available."""
@@ -268,10 +269,10 @@ class TaskAgent:
   if: always()
   run: |
     if [ "${{ job.status }}" == "success" ]; then
-      curl -X POST http://your-server:5000/speak \
+      curl -X POST http://your-server:8181/speak \
         -d '{"text": "Build successful", "voice": "nova"}'
     else
-      curl -X POST http://your-server:5000/speak \
+      curl -X POST http://your-server:8181/speak \
         -d '{"text": "Build failed", "voice": "nova"}'
     fi
 ```

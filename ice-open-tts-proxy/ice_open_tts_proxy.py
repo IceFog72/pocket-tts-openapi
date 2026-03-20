@@ -29,41 +29,10 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 
+# Import the shared backend
+from tts_backend import Config, TTSClient, check_port_in_use, get_pid_on_port, get_process_name, handle_port_conflict, setup_logging
+
 logger = logging.getLogger(__name__)
-
-# =============================================================================
-# Logging Configuration
-# =============================================================================
-
-def setup_logging(log_level=logging.INFO):
-    """Configure logging with file and console handlers."""
-    log_dir = Path(__file__).parent / "logs"
-    log_dir.mkdir(exist_ok=True)
-    
-    # Create formatter
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    
-    # File handler - daily log file
-    log_file = log_dir / f"tts_proxy_{time.strftime('%Y%m%d')}.log"
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    
-    # Configure root logger
-    root_logger = logging.getLogger("tts_proxy")
-    root_logger.setLevel(logging.DEBUG)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-    
-    return log_file
 
 # GUI imports - tkinter is built-in
 HAS_TKINTER = False
@@ -83,82 +52,6 @@ try:
 except ImportError:
     print("Error: requests package required. Install with: pip install requests")
     sys.exit(1)
-
-
-# Port checking utilities
-def check_port_in_use(port: int) -> bool:
-    """Check if a port is already in use."""
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('localhost', port)) == 0
-
-
-def get_pid_on_port(port: int):
-    """Get PID using a port (cross-platform)."""
-    import subprocess
-    try:
-        if sys.platform == "win32":
-            result = subprocess.run(
-                ["netstat", "-ano"], capture_output=True, text=True
-            )
-            for line in result.stdout.split('\n'):
-                if f":{port}" in line and "LISTENING" in line:
-                    parts = line.strip().split()
-                    return parts[-1]
-        else:
-            for cmd in [["lsof", "-ti", f":{port}"], ["ss", "-tlnp"]]:
-                try:
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if cmd[0] == "lsof" and result.stdout.strip():
-                        return result.stdout.strip()
-                except FileNotFoundError:
-                    continue
-    except Exception:
-        pass
-    return None
-
-
-def handle_port_conflict(port: int, app_name: str = "Ice Open TTS Proxy") -> int:
-    """Handle port conflict - ask user for new port or exit."""
-    if not check_port_in_use(port):
-        return port
-    
-    pid = get_pid_on_port(port)
-    msg = f"Port {port} already in use" + (f" (PID: {pid})" if pid else "")
-    
-    if HAS_TKINTER:
-        from tkinter import messagebox
-        result = messagebox.askyesnocancel(
-            "Port Conflict",
-            f"{msg}\n\nUse a different port?"
-        )
-        if result is None:  # Cancel
-            sys.exit(1)
-        elif result:  # Yes
-            from tkinter import simpledialog
-            new_port = simpledialog.askinteger(
-                "New Port",
-                "Enter port number:",
-                minvalue=1024,
-                maxvalue=65535,
-                initialvalue=port
-            )
-            if new_port and not check_port_in_use(new_port):
-                return new_port
-            messagebox.showerror("Error", "Invalid or occupied port")
-            sys.exit(1)
-        else:  # No - exit
-            sys.exit(1)
-    else:
-        # Headless fallback
-        print(f"\n⚠️  {msg}")
-        try:
-            new_port = input("Enter different port (or press Enter to exit): ").strip()
-            if new_port.isdigit() and not check_port_in_use(int(new_port)):
-                return int(new_port)
-            sys.exit(1)
-        except (KeyboardInterrupt, EOFError):
-            sys.exit(1)
 
 
 # Audio playback - cross-platform
@@ -236,83 +129,6 @@ def setup_audio_backend():
         return True
     
     return False
-
-
-# =============================================================================
-# Configuration
-# =============================================================================
-
-import configparser
-import os
-
-class Config:
-    """Configuration manager using INI file in the same directory as the script."""
-    
-    def __init__(self, config_path: Optional[str] = None):
-        if config_path is None:
-            # Determine the directory of this script
-            try:
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-            except NameError:
-                # Fallback to current working directory
-                script_dir = os.getcwd()
-            config_path = os.path.join(script_dir, "config.ini")
-        self.config_path = config_path
-        self.parser = configparser.ConfigParser()
-        if not os.path.exists(self.config_path):
-            self._create_default()
-        self.parser.read(self.config_path)
-    
-    def _create_default(self):
-        """Create a default configuration file."""
-        self.parser['server'] = {
-            'tts_server_url': 'http://localhost:8001',
-            'api_host': '127.0.0.1',
-            'api_port': '8181',
-            'default_voice': 'nova',
-            'speed': '1.0',
-            'format': 'wav'
-        }
-        # Also add a section for logging if needed
-        self.parser['logging'] = {
-            'enabled': 'False',
-            'level': 'INFO'
-        }
-        with open(self.config_path, 'w') as f:
-            self.parser.write(f)
-    
-    def get(self, key: str, default=None):
-        """Get a configuration value as a string."""
-        try:
-            return self.parser.get('server', key)
-        except (configparser.NoSectionError, configparser.NoOptionError):
-            return default
-    
-    def getint(self, key: str, default=0):
-        """Get a configuration value as an integer."""
-        try:
-            return self.parser.getint('server', key)
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
-            return default
-    
-    def getfloat(self, key: str, default=0.0):
-        """Get a configuration value as a float."""
-        try:
-            return self.parser.getfloat('server', key)
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
-            return default
-    
-    def getboolean(self, key: str, default=False):
-        """Get a configuration value as a boolean."""
-        try:
-            return self.parser.getboolean('server', key)
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
-            return default
-    
-    def set(self, key: str, value):
-        """Set a configuration value and save to file."""
-        self.parser.set('server', key, str(value))
-        self.save()
     
     def save(self):
         """Save the configuration to the INI file."""
@@ -445,9 +261,26 @@ class OpenAITTSStreamingManager:
         self.audio_player = audio_player
         self.buffer = ""
         self.timer = None
-        self.debounce_delay = 0.5  # seconds
+        self.debounce_delay = 0.4  # Slightly increased to reduce 429 bursts
         self.lock = threading.Lock()
         self.is_active = False
+        self.on_audio_callback = None
+        self.voice = "nova"
+        self.speed = 1.0
+        self.format = "wav"
+        self.abort_flag = threading.Event()
+        self.request_serial = 0 # Track requests for cancellation
+        
+        # Max text size before we split into multiple requests
+        self.chunk_threshold = 200 # characters
+
+    def clear_buffer(self) -> None:
+        """Clear the current text buffer and abort ongoing processing."""
+        self.abort_flag.set()
+        with self.lock:
+            self.buffer = ""
+            self.request_serial += 1 # Invalidate in-flight chunks
+        self.abort_flag.clear()
 
     def add_text(self, text: str) -> None:
         """Add text to the buffer and reset the debounce timer."""
@@ -471,14 +304,43 @@ class OpenAITTSStreamingManager:
             text = self.buffer
             self.buffer = ""
         # Outside the lock to avoid holding lock during network call
-        self._process_text(text)
+        self._process_text_with_splitting(text)
 
-    def _process_text(self, text: str) -> None:
-        """Send text to TTS server for streaming and play the result."""
+    def _process_text_with_splitting(self, text: str) -> None:
+        """Split large text into sentences and process each."""
+        import re
+        # Split by sentence-final punctuation followed by space or newline
+        # Using positive lookbehinds to keep the punctuation
+        parts = re.split(r'(?<=[.!?])\s+', text.strip())
+        
+        for part in parts:
+            if not part.strip():
+                continue
+            if self.abort_flag.is_set():
+                break
+            
+            # If a single part is still too long, break it by commas
+            if len(part) > self.chunk_threshold:
+                subparts = re.split(r'(?<=[,;])\s+', part)
+                for sub in subparts:
+                    if self.abort_flag.is_set():
+                        break
+                    if sub.strip():
+                        self._process_single_chunk(sub)
+            else:
+                self._process_single_chunk(part)
+
+    def _process_single_chunk(self, text: str) -> None:
+        """Send a single chunk of text to TTS server."""
         if not self.is_active:
             return
+            
+        # Capture current serial to check validity later
+        with self.lock:
+            initial_serial = self.request_serial
+            
         log = logging.getLogger("tts_proxy.stream")
-        log.info(f"Streaming text: '{text[:50]}...' (length: {len(text)})")
+        log.info(f"Streaming chunk: '{text[:50]}...' (length: {len(text)})")
         try:
             payload = {
                 "input": text,
@@ -486,26 +348,57 @@ class OpenAITTSStreamingManager:
                 "response_format": self.format,
                 "speed": self.speed
             }
+            log.info(f"LIVE STREAM REQUEST: voice='{self.voice}', speed={self.speed}, payload_voice='{payload['voice']}'")
             # Use stream=True to get chunked response
-            resp = requests.post(
-                f"{self.tts_client.base_url}/v1/audio/speech",
-                json=payload,
-                timeout=60,
-                stream=True
-            )
-            resp.raise_for_status()
+            for attempt in range(2):
+                # Check for cancellation before network call
+                with self.lock:
+                    if initial_serial != self.request_serial or self.abort_flag.is_set():
+                        log.info("Aborting stream request before it started (cancelled)")
+                        return
+
+                resp = requests.post(
+                    f"{self.tts_client.base_url}/v1/audio/speech",
+                    json=payload,
+                    timeout=60,
+                    stream=True
+                )
+                
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("Retry-After", 1))
+                    log.warning(f"Rate limited (429). Retrying after {retry_after}s... (Attempt {attempt+1}/2)")
+                    time.sleep(retry_after)
+                    continue
+                
+                resp.raise_for_status()
+                break
+            else:
+                log.error("Failed to stream chunk after retries due to rate limit")
+                return
 
             # Collect audio chunks
             audio_chunks = []
             for chunk in resp.iter_content(chunk_size=4096):
+                # Check for cancellation during download
+                with self.lock:
+                    if initial_serial != self.request_serial or self.abort_flag.is_set():
+                        log.info("Aborting stream download mid-way (cancelled)")
+                        return
+                        
                 if chunk:
                     audio_chunks.append(chunk)
 
             if audio_chunks:
+                # Final check before playing
+                with self.lock:
+                    if initial_serial != self.request_serial or self.abort_flag.is_set():
+                        log.info("Discarding downloaded stream chunk (cancelled)")
+                        return
+                        
                 audio_data = b"".join(audio_chunks)
                 log.info(f"Received streamed audio: {len(audio_data)} bytes")
                 # Play the complete audio data
-                if self.on_audio_callback:
+                if getattr(self, "on_audio_callback", None):
                     self.on_audio_callback(audio_data)
                 elif self.audio_player:
                     self.audio_player.play(audio_data)
@@ -516,12 +409,12 @@ class OpenAITTSStreamingManager:
 
     def start(self, voice: str = "nova", speed: float = 1.0, format: str = "wav") -> None:
         """Start the streaming manager."""
-        if self.is_active:
-            return
-        self.is_active = True
         self.voice = voice
         self.speed = speed
         self.format = format
+        if self.is_active:
+            return
+        self.is_active = True
 
     def stop(self) -> None:
         """Stop the streaming manager and process any remaining text."""
@@ -557,6 +450,10 @@ class OpenAITTSStreamingManager:
         """Update the audio format for streaming."""
         self.format = fmt
 
+    def set_client(self, tts_client) -> None:
+        """Update the TTS client for streaming."""
+        self.tts_client = tts_client
+
 
 # =============================================================================
 # Audio Player (Thread-safe)
@@ -570,6 +467,8 @@ class AudioPlayer:
         self.is_playing = False
         self.worker_thread = None
         self.stop_event = threading.Event()
+        self.current_proc = None
+        self._lock = threading.Lock()
         self.log = logging.getLogger("tts_proxy.audio")
 
     def start(self):
@@ -580,11 +479,29 @@ class AudioPlayer:
         self.log.info("Audio player started")
 
     def stop(self):
-        """Stop the audio player."""
+        """Stop current playback and player thread."""
         self.stop_event.set()
-        self.play_queue.put(None)  # Sentinel
+        # Kill current process
+        with self._lock:
+            if self.current_proc:
+                try:
+                    self.current_proc.kill() # Force kill
+                    self.current_proc = None
+                except:
+                    pass
+        
+        # Clear the queue
+        while not self.play_queue.empty():
+            try:
+                self.play_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        # Put sentinel
+        self.play_queue.put(None)
+        
         if self.worker_thread:
-            self.worker_thread.join(timeout=2)
+            self.worker_thread.join(timeout=1)
         self.log.info("Audio player stopped")
 
     def play(self, audio_data: bytes, callback=None):
@@ -610,12 +527,40 @@ class AudioPlayer:
                     temp_path = f.name
                 
                 try:
-                    if play_sound:
-                        play_sound(temp_path)
+                    # Linux optimized playback using Popen for interruptibility
+                    if sys.platform == "linux" and AUDIO_BACKEND == "system":
+                        # Try commands in order
+                        success = False
+                        for cmd_name in ["paplay", "aplay", "ffplay", "mpv"]:
+                            try:
+                                cmd = [cmd_name, temp_path]
+                                if cmd_name == "ffplay": cmd = ["ffplay", "-nodisp", "-autoexit", temp_path]
+                                if cmd_name == "mpv": cmd = ["mpv", "--no-video", temp_path]
+                                
+                                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                with self._lock:
+                                    self.current_proc = proc
+                                
+                                proc.wait()
+                                with self._lock:
+                                    self.current_proc = None
+                                success = True
+                                break
+                            except:
+                                continue
+                        if not success and play_sound:
+                            play_sound(temp_path)
+                    else:
+                        if play_sound:
+                            play_sound(temp_path)
+                    
                     if callback:
                         callback("done")
                 finally:
-                    os.unlink(temp_path)
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
                     self.is_playing = False
                     
             except queue.Empty:
@@ -635,7 +580,7 @@ class APIServer:
     """Flask-based API server for programmatic access."""
     
     def __init__(self, tts_client: TTSClient, audio_player: AudioPlayer,
-                 host: str = "127.0.0.1", port: int = 5000,
+                 host: str = "127.0.0.1", port: int = 8181,
                  feed_queue: Optional[queue.Queue] = None):
         self.tts_client = tts_client
         self.audio_player = audio_player
@@ -784,8 +729,36 @@ class TTSApp:
         self.config = config
         self.tts_url = tts_url or config.get("tts_server_url")
         
-        # Check port conflict before starting
-        final_port = handle_port_conflict(api_port or config.get("api_port"))
+        # Prevent blocking CLI input in GUI mode: check port manually
+        desired_port = int(api_port or config.getint("api_port", 8181))
+        if check_port_in_use(desired_port):
+            pid = get_pid_on_port(desired_port)
+            proc_name = get_process_name(pid) if pid else "Unknown"
+            
+            is_our_app = False
+            if proc_name and any(kw in proc_name.lower() for kw in ["python", "pocket", "ice"]):
+                is_our_app = True
+                
+            if is_our_app and messagebox:
+                msg = f"Port {desired_port} is in use by same app/script ({proc_name}).\nDo you want to kill it and restart?"
+                if messagebox.askyesno("Restart Server?", msg):
+                    import subprocess
+                    import os as sys_os
+                    if sys.platform == "win32":
+                        subprocess.run(["taskkill", "/PID", pid, "/F"], check=True)
+                    else:
+                        sys_os.kill(int(pid), 9)
+                else:
+                    sys.exit(1)
+            else:
+                if messagebox:
+                    messagebox.showerror("Port in use", f"API port {desired_port} is occupied by another app: {proc_name}\nPlease shut it down or change the port.")
+                sys.exit(1)
+        final_port = desired_port
+        
+        # Live TTS tracking
+        self.last_live_text_len = 0
+        self.live_tts_enabled = False
         
         # Initialize components
         self.tts_client = TTSClient(self.tts_url)
@@ -802,6 +775,10 @@ class TTSApp:
         
         # Status queue for thread-safe GUI updates
         self.status_queue = queue.Queue()
+        
+        # Generation tracking for cancellation
+        self.gen_serial = 0
+        self.serial_lock = threading.Lock()
         
         # Setup GUI
         self._setup_gui()
@@ -854,6 +831,10 @@ class TTSApp:
                                        textvariable=self.speed_var, width=5)
         self.speed_spin.pack(side=tk.LEFT, padx=5)
         
+        # Sync changes to live manager if it exists
+        self.voice_var.trace_add("write", lambda *args: self._sync_live_settings())
+        self.speed_var.trace_add("write", lambda *args: self._sync_live_settings())
+        
         refresh_btn = ttk.Button(voice_frame, text="↻", width=3,
                                   command=self._refresh_voices)
         refresh_btn.pack(side=tk.LEFT)
@@ -862,7 +843,7 @@ class TTSApp:
         text_frame = ttk.LabelFrame(main_frame, text="Text", padding="5")
         text_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        self.text_input = scrolledtext.ScrolledText(text_frame, height=6, wrap=tk.WORD)
+        self.text_input = scrolledtext.ScrolledText(text_frame, height=6, wrap=tk.WORD, undo=True)
         self.text_input.pack(fill=tk.BOTH, expand=True)
         self.text_input.insert("1.0", "Hello! This is a test of the TTS speaker.")
         
@@ -879,6 +860,16 @@ class TTSApp:
         )
         self.live_tts_check.pack(side=tk.LEFT)
 
+        # Bind standard shortcuts (especially for Linux)
+        self.text_input.bind("<Control-a>", self._select_all)
+        self.text_input.bind("<Control-A>", self._select_all)
+        self.text_input.bind("<<Paste>>", self._on_paste)
+        
+        # Undo / Redo
+        self.text_input.bind("<Control-z>", lambda e: self.text_input.event_generate("<<Undo>>"))
+        self.text_input.bind("<Control-y>", lambda e: self.text_input.event_generate("<<Redo>>"))
+        self.text_input.bind("<Control-Shift-Z>", lambda e: self.text_input.event_generate("<<Redo>>"))
+        
         # Bind key release for live TTS
         self.text_input.bind("<KeyRelease>", self._on_text_keypress)
         
@@ -901,14 +892,21 @@ class TTSApp:
         status_frame = ttk.Frame(main_frame)
         status_frame.pack(fill=tk.X)
         
-        self.status_label = ttk.Label(status_frame, text="Ready")
-        self.status_label.pack(side=tk.LEFT)
+        self.playing_dot = ttk.Label(status_frame, text="●", foreground="gray")
+        self.playing_dot.pack(side=tk.LEFT)
+        self.playing_label = ttk.Label(status_frame, text="Ready")
+        self.playing_label.pack(side=tk.LEFT, padx=5)
         
         self.api_label = ttk.Label(status_frame, text="API: --")
         self.api_label.pack(side=tk.RIGHT)
         
         # Bind Enter key to speak
         self.text_input.bind("<Control-Return>", lambda e: self._speak())
+        
+        # Common shortcut bindings to ensures they work
+        self.text_input.bind("<Control-c>", lambda e: self.text_input.event_generate("<<Copy>>"))
+        self.text_input.bind("<Control-v>", lambda e: self.text_input.event_generate("<<Paste>>"))
+        self.text_input.bind("<Control-x>", lambda e: self.text_input.event_generate("<<Cut>>"))
         
         # --- Request Feed ---
         feed_frame = ttk.LabelFrame(main_frame, text="Request Feed", padding="5")
@@ -941,6 +939,9 @@ class TTSApp:
             if self.tts_client.health_check():
                 self.status_queue.put("Connected to TTS server")
                 self.server_status.config(foreground="green")
+                # Update live manager if it exists
+                if self.live_tts_manager:
+                    self.live_tts_manager.set_client(self.tts_client)
                 self._refresh_voices()
             else:
                 self.status_queue.put("Cannot connect to TTS server")
@@ -968,34 +969,83 @@ class TTSApp:
                     self.tts_client,
                     self.audio_player
                 )
-            self.live_tts_manager.set_voice(self.voice_var.get())
-            self.live_tts_manager.set_speed(self.speed_var.get())
-            self.live_tts_manager.set_format("wav")  # Use wav for consistency
-            self.live_tts_manager.start()
+            self.live_tts_manager.start(
+                voice=self.voice_var.get(),
+                speed=self.speed_var.get(),
+                format="wav"
+            )
+            self.last_live_text_len = len(self.text_input.get("1.0", tk.INSERT))
+            self.stop_btn.config(state=tk.NORMAL)
+            self.speak_btn.config(state=tk.DISABLED)
             self.status_queue.put("Live mode ON - type and it will speak (streaming)")
         else:
             if self.live_tts_manager:
                 self.live_tts_manager.stop()
+            self.speak_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
             self.status_queue.put("Live mode OFF")
+            
+    def _sync_live_settings(self):
+        """Sync current UI settings to the live TTS manager."""
+        if self.live_tts_manager:
+            try:
+                v = self.voice_var.get()
+                s = self.speed_var.get()
+                self.live_tts_manager.set_voice(v)
+                self.live_tts_manager.set_speed(s)
+                print(f"DEBUG: Synced live settings: voice={v}, speed={s}")
+            except Exception as e:
+                print(f"DEBUG: Failed to sync live settings: {e}")
 
     def _on_text_keypress(self, event):
         """Handle key release for live TTS."""
         if not self.live_tts_enabled or not self.live_tts_manager:
             return
 
-        # Only process certain keys
-        if event.keysym in ('space', 'Return', 'period', 'exclam', 'question', 'comma', 'semicolon', 'colon'):
-            # Get the word before cursor
-            cursor_pos = self.text_input.index(tk.INSERT)
-            line, col = self.text_input.index(cursor_pos).split('.')
-            line_text = self.text_input.get(f"{line}.0", f"{line}.end")
+        current_text = self.text_input.get("1.0", tk.INSERT)
 
-            # Get current word being typed
-            words = line_text[:int(col)].split()
-            if words:
-                current_word = words[-1] + (' ' if event.keysym == 'space' else '. ')
-                self.live_tts_manager.add_text(current_word)
-                self.status_label.config(text=f"Live: {current_word[:30]}...")
+        # If text decreased (deletion) or we are before the last offset, reset tracking
+        if len(current_text) < self.last_live_text_len:
+            self.last_live_text_len = len(current_text)
+            return
+
+        # Only process trigger keys for sending to TTS
+        if event.keysym in ('space', 'Return', 'period', 'exclam', 'question', 'comma', 'semicolon', 'colon'):
+            # Extract only the NEW portion since last trigger
+            if len(current_text) > self.last_live_text_len:
+                new_chunk = current_text[self.last_live_text_len:]
+                self.live_tts_manager.add_text(new_chunk)
+                self.last_live_text_len = len(current_text)
+                self.playing_label.config(text=f"Live: {new_chunk.strip()[:30]}...")
+    
+    def _on_paste(self, event=None):
+        """Handle paste events for live mode."""
+        if not self.live_tts_enabled or not self.live_tts_manager:
+            return
+        
+        # Need a small delay to let the paste complete before we read the text
+        self.root.after(50, self._process_after_paste)
+
+    def _process_after_paste(self):
+        """Read text after paste completed."""
+        if not self.live_tts_enabled or not self.live_tts_manager:
+            return
+            
+        current_text = self.text_input.get("1.0", tk.INSERT)
+        if len(current_text) > self.last_live_text_len:
+            new_chunk = current_text[self.last_live_text_len:]
+            self.live_tts_manager.add_text(new_chunk)
+            self.last_live_text_len = len(current_text)
+            self.playing_label.config(text=f"Live (Pasted): {new_chunk.strip()[:30]}...")
+        else:
+            self.last_live_text_len = len(current_text)
+
+    def _select_all(self, event=None):
+        """Select all text in input widget."""
+        self.text_input.tag_add(tk.SEL, "1.0", tk.END)
+        self.text_input.mark_set(tk.INSERT, tk.END)
+        self.text_input.see(tk.INSERT)
+        return "break" # Prevent default behavior
     
     def _speak(self):
         """Generate and play speech."""
@@ -1009,10 +1059,22 @@ class TTSApp:
         
         self.speak_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
-        self.status_label.config(text=f"Generating speech with {voice}...")
+        self.playing_label.config(text=f"Generating speech with {voice}...")
+        
+        # Increment and capture serial for cancellation
+        with self.serial_lock:
+            self.gen_serial += 1
+            request_serial = self.gen_serial
         
         def do_speak():
             audio_data = self.tts_client.generate_speech(text, voice, speed)
+            
+            # Check if this request is still valid
+            with self.serial_lock:
+                if request_serial != self.gen_serial:
+                    self.log.info(f"Discarding obsolete audio request (ID {request_serial})")
+                    return
+
             if audio_data:
                 self.status_queue.put(f"Playing audio ({len(audio_data)} bytes)")
                 self.audio_player.play(audio_data, callback=self._on_playback_done)
@@ -1025,25 +1087,39 @@ class TTSApp:
     
     def _on_playback_done(self, result):
         """Callback when playback finishes."""
-        self.root.after(0, lambda: self.speak_btn.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
+        if not self.live_tts_enabled:
+            self.root.after(0, lambda: self.speak_btn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
+        
         if result == "done":
-            self.root.after(0, lambda: self.status_label.config(text="Playback complete"))
+            self.root.after(0, lambda: self.playing_label.config(text="Playback complete"))
         else:
-            self.root.after(0, lambda: self.status_label.config(text=f"Playback: {result}"))
+            self.root.after(0, lambda: self.playing_label.config(text=f"Playback: {result}"))
     
     def _stop_speaking(self):
         """Stop current playback."""
-        # Clear the queue
-        while not self.audio_player.play_queue.empty():
-            try:
-                self.audio_player.play_queue.get_nowait()
-            except queue.Empty:
-                break
+        # Increment serial to invalidate pending requests
+        with self.serial_lock:
+             self.gen_serial += 1
+
+        # Stop and clear the live manager if it exists
+        if self.live_tts_manager:
+            self.live_tts_manager.clear_buffer()
         
-        self.speak_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
-        self.status_label.config(text="Stopped")
+        # Stop the player (kills current process and clears queue)
+        self.audio_player.stop()
+        
+        # Restart audio player thread for next use
+        self.audio_player.start()
+        
+        if not self.live_tts_enabled:
+            self.speak_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+        else:
+            self.speak_btn.config(state=tk.DISABLED)
+            self.stop_btn.config(state=tk.NORMAL)
+        self.playing_dot.config(foreground="gray")
+        self.playing_label.config(text="Stopped")
     
     def _save_audio(self):
         """Generate and save audio to file."""
@@ -1082,7 +1158,7 @@ class TTSApp:
         try:
             while True:
                 msg = self.status_queue.get_nowait()
-                self.status_label.config(text=msg)
+                self.playing_label.config(text=msg)
         except queue.Empty:
             pass
         
@@ -1093,6 +1169,14 @@ class TTSApp:
                 self._update_feed(feed_msg)
         except queue.Empty:
             pass
+            
+        # Update playing indicator
+        if self.audio_player.is_playing:
+            self.playing_dot.config(foreground="limegreen")
+            self.playing_label.config(text="🔊 Playing...")
+        else:
+            self.playing_dot.config(foreground="gray")
+            self.playing_label.config(text="Ready")
             
         self.root.after(100, self._poll_status)
     
@@ -1122,6 +1206,10 @@ class TTSApp:
     
     def on_close(self):
         """Handle window close."""
+        # Invalidate any in-flight requests
+        with self.serial_lock:
+            self.gen_serial += 1
+            
         if self.live_tts_manager:
             self.live_tts_manager.stop()
         self.audio_player.stop()
@@ -1134,13 +1222,15 @@ class TTSApp:
 # =============================================================================
 
 def main():
+    _config = Config()
+    
     parser = argparse.ArgumentParser(description="TTS Speaker - GUI and API for Pocket TTS")
-    parser.add_argument("--tts-url", default="http://localhost:8001",
-                        help="Pocket TTS server URL (default: http://localhost:8001)")
-    parser.add_argument("--port", type=int, default=8181,
-                        help="API server port (default: 8181)")
-    parser.add_argument("--host", default="127.0.0.1",
-                        help="API server host (default: 127.0.0.1)")
+    parser.add_argument("--tts-url", default=_config.get("tts_server_url", "http://localhost:8001"),
+                        help="Pocket TTS server URL")
+    parser.add_argument("--port", type=int, default=_config.getint("api_port", 8181),
+                        help="API server port")
+    parser.add_argument("--host", default=_config.get("api_host", "127.0.0.1"),
+                        help="API server host")
     parser.add_argument("--no-gui", action="store_true",
                         help="Run in headless mode (API server only)")
     parser.add_argument("--log", action="store_true",

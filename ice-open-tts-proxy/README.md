@@ -4,14 +4,15 @@ Middleware between apps/AI agents and Pocket TTS server with real-time streaming
 
 ```
 [AI Agent / App / GUI] → Ice Open TTS Proxy → Pocket TTS Server
-                      (port 5000)              (port 8001)
+                      (port 8181)              (port 8005)
 ```
 
 ## Features
 
-- **GUI Version**: Desktop app with text input, voice selection, streaming checkbox
+- **GUI Version**: Desktop app with text input, voice selection, and advanced streaming
 - **CLI Version**: Terminal-only API server (no GUI dependencies)
-- **Streaming**: Type text and hear it spoken word-by-word as you type
+- **Smart Streaming**: Hear it spoken as you type (sentence-based for best quality)
+- **GUI UX**: Standard shortcuts (Ctrl+A, Ctrl+Z/Y, Ctrl+C/V) and automatic paste-to-stream
 - **Cross-platform**: Linux, macOS, Windows
 
 ## Quick Start
@@ -38,12 +39,12 @@ cd .. && ./start.sh
 
 ## Streaming Mode
 
-Enable "Stream as I type" checkbox in GUI to hear words as you type:
+Enable "Live Mode (speak as you type)" in the GUI:
 
-1. Check the streaming checkbox
-2. Type words in the text box
-3. Words are sent to TTS when you press space, period, Enter, etc.
-4. Audio plays immediately for each word/phrase
+1. Check the live mode checkbox.
+2. Type words or paste text (Ctrl+V).
+3. The app intelligently captures new text and sends it to the server in sentence-chunks.
+4. Audio plays sequentially via an internal playback queue.
 
 ## API Endpoints
 
@@ -99,8 +100,8 @@ python ice_open_tts_proxy_cli.py --server --port 5000
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TTS_SERVER` | http://localhost:8001 | Pocket TTS server URL |
-| `PROXY_SERVER` | http://127.0.0.1:5000 | Proxy server URL |
+| `TTS_SERVER` | http://localhost:8005 | Pocket TTS server URL |
+| `PROXY_SERVER` | http://127.0.0.1:8181 | Proxy server URL |
 
 ## Programmatic Usage
 
@@ -110,7 +111,7 @@ python ice_open_tts_proxy_cli.py --server --port 5000
 import requests
 
 # Generate and play speech
-requests.post("http://127.0.0.1:5000/speak", json={
+requests.post("http://127.0.0.1:8181/speak", json={
     "text": "Hello from my application!",
     "voice": "Carlotta",
     "speed": 1.0
@@ -133,17 +134,16 @@ curl -X POST http://127.0.0.1:5000/speak \
 
 ## Configuration
 
-Settings saved in `~/.tts-speaker/config.json`:
+Settings are saved in `config.ini` in the local directory.
 
-```json
-{
-  "tts_server_url": "http://localhost:8001",
-  "api_host": "127.0.0.1",
-  "api_port": 5000,
-  "default_voice": "nova",
-  "speed": 1.0,
-  "format": "wav"
-}
+```ini
+[proxy]
+tts_server_url = http://localhost:8005
+api_host = 127.0.0.1
+api_port = 8181
+default_voice = nova
+speed = 1.0
+format = wav
 ```
 
 ## Tests

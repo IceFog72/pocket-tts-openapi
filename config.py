@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     
     # Security settings
     allowed_origins: List[str] = ["http://localhost:*", "http://127.0.0.1:*"]
-    rate_limit_requests: int = 30  # requests per minute
+    rate_limit_requests: int = 120  # requests per minute (increased for Live Mode)
     rate_limit_window: int = 60  # seconds
     enable_high_priority: bool = True  # Windows high priority (can disable for shared systems)
     model_load_timeout: int = 300  # seconds to wait for model download
