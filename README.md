@@ -35,6 +35,26 @@ To get the latest version of the project:
 - **Windows**: Run `update.bat`
 - **Linux**: Run `./update.sh`
 
+---
+
+## 🖥️ Ice Open TTS Proxy (GUI & AI Agent Bridge)
+
+For a more robust desktop experience and seamless AI integration, use the built-in **Ice Open TTS Proxy**.
+
+- 🎨 **Desktop GUI**: Clean interface with text input, voice selection, and playback controls.
+- ⚡ **Live Mode**: Advanced streaming mode that speaks as you type with real-time setting sync.
+- 🤖 **AI Agent Bridge**: Built-in OpenAI-compatible API server (Port 8181) for easy integration with tools like **SillyTavern**.
+
+### Launching the Proxy
+1. Ensure the main TTS server is running (Step 2 above).
+2. Go to the `ice-open-tts-proxy/` directory.
+3. **Windows**: Run `start_ice_gui.bat`
+4. **Linux**: Run `./start_ice_gui.sh`
+
+See **[AGENTS.md](file:///home/icefog/LLM/pocket-tts-openapi/ice-open-tts-proxy/AGENTS.md)** for detailed AI Agent integration guides.
+
+---
+
 **Server runs at** `http://localhost:8005` (or next available port)
 
 ## Features
