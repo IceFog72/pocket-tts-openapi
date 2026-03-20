@@ -1,6 +1,28 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
 import os
-from typing import List
+import configparser
+from typing import List, Any, Dict
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+def load_config_ini(path: str = "config.ini") -> Dict[str, Any]:
+    """Read and flatten config.ini into a dictionary."""
+    if not os.path.exists(path):
+        return {}
+    
+    parser = configparser.ConfigParser(inline_comment_prefixes=(';', '#'))
+    try:
+        parser.read(path)
+        conf = {}
+        for section in parser.sections():
+            for key, value in parser.items(section):
+                # Convert comma-separated strings to lists if needed
+                if key == "allowed_origins":
+                    conf[key] = [origin.strip() for origin in value.split(",")]
+                else:
+                    conf[key] = value
+        return conf
+    except Exception as e:
+        print(f"Warning: Failed to load {path}: {e}")
+        return {}
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(  # type: ignore
@@ -48,7 +70,11 @@ class Settings(BaseSettings):
     min_input_length: int = 1
 
 
-settings = Settings()
+# Initialize settings: Env > .env > config.ini > Defaults
+# Passing load_config_ini() items as kwargs ensures they are prioritized over Defaults
+# but because they are kwargs to the constructor, they have lower priority than 
+# environment variables and .env file values processed by BaseSettings.
+settings = Settings(**load_config_ini())
 
 # Ensure directories exist
 os.makedirs(settings.voices_dir, exist_ok=True)
@@ -56,6 +82,7 @@ os.makedirs(settings.embeddings_dir, exist_ok=True)
 os.makedirs(settings.audio_cache_dir, exist_ok=True)
 
 if __name__ == "__main__":
-    print("Default Settings:")
-    print(settings.model_dump_json(indent=2))
-    print("To override, create a config.ini or .env file.")
+    print("Loaded Settings:")
+    # Use model_dump for Pydantic v2
+    import json
+    print(json.dumps(settings.model_dump(), indent=2))
