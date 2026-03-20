@@ -1,0 +1,17 @@
+INFO:__main__:Starting server with HTTP debug logging enabled
+INFO:__main__:Server binding to: http://0.0.0.0:8001
+INFO:__main__:If you are using SillyTavern, set provider endpoint to: http://127.0.0.1:8001/v1/audio/speech
+2026-03-20 13:32:33,333 - uvicorn.error - INFO - Started server process [295695]
+2026-03-20 13:32:33,333 - uvicorn.error - INFO - Waiting for application startup.
+INFO:__main__:Starting TTS API server...
+INFO:__main__:Loading TTS model (timeout: 300s)...
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/kyutai/pocket-tts/resolve/427e3d61b276ed69fdd03de0d185fa8a8d97fc5b/tts_b6369a24.safetensors "HTTP/1.1 401 Unauthorized"
+INFO:root:TTS Model loaded successfully. Its size is 471.0 MB
+INFO:__main__:Patching TTSModel with missing _slice_kv_cache method
+INFO:__main__:Pocket TTS loaded | Device: cpu | Sample Rate: 24000
+INFO:__main__:[96m[1mDefault voices available:[0m
+INFO:__main__:[96m   OpenAI aliases: alloy, echo, fable, onyx, nova, shimmer[0m
+INFO:__main__:[96m   Pocket TTS: alba, marius, javert, jean, fantine, cosette, eponine, azelma[0m
+INFO:__main__:[93mNo custom voices found in 'voices/' directory.[0m
+2026-03-20 13:32:34,337 - uvicorn.error - INFO - Application startup complete.
+2026-03-20 13:32:34,338 - uvicorn.error - INFO - Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
