@@ -485,7 +485,12 @@ class AudioPlayer:
         with self._lock:
             if self.current_proc:
                 try:
-                    self.current_proc.kill() # Force kill
+                    if os.name == 'nt':
+                        # Use taskkill for Windows to ensure process-tree termination
+                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(self.current_proc.pid)], 
+                                       capture_output=True)
+                    else:
+                        self.current_proc.kill() # Force kill (SIGKILL on Linux)
                     self.current_proc = None
                 except:
                     pass
@@ -527,10 +532,37 @@ class AudioPlayer:
                     temp_path = f.name
                 
                 try:
-                    # Linux optimized playback using Popen for interruptibility
-                    if sys.platform == "linux" and AUDIO_BACKEND == "system":
-                        # Try commands in order
-                        success = False
+                    # Multi-platform process-based playback (required for interruption)
+                    success = False
+                    
+                    if sys.platform == "win32":
+                        # Windows: Try common process-based players
+                        for cmd_name in ["ffplay", "mpv", "powershell"]:
+                            try:
+                                if cmd_name == "powershell":
+                                    # Use a lightweight PowerShell command to play sound while keeping process control
+                                    cmd = ["powershell", "-c", f"(New-Object Media.SoundPlayer '{temp_path}').PlaySync()"]
+                                elif cmd_name == "ffplay":
+                                    cmd = ["ffplay", "-nodisp", "-autoexit", temp_path]
+                                elif cmd_name == "mpv":
+                                    cmd = ["mpv", "--no-video", temp_path]
+                                else:
+                                    cmd = [cmd_name, temp_path]
+                                
+                                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                with self._lock:
+                                    self.current_proc = proc
+                                
+                                proc.wait()
+                                with self._lock:
+                                    self.current_proc = None
+                                success = True
+                                break
+                            except:
+                                continue
+                                
+                    elif sys.platform == "linux" and AUDIO_BACKEND == "system":
+                        # Linux: Standard system command logic
                         for cmd_name in ["paplay", "aplay", "ffplay", "mpv"]:
                             try:
                                 cmd = [cmd_name, temp_path]
@@ -548,11 +580,11 @@ class AudioPlayer:
                                 break
                             except:
                                 continue
-                        if not success and play_sound:
-                            play_sound(temp_path)
-                    else:
-                        if play_sound:
-                            play_sound(temp_path)
+                    
+                    # Fallback to blocking libraries if no process-based player worked
+                    if not success and play_sound:
+                        self.log.warning("No process-based player found; using fallback (Stop button may not work for this sentence)")
+                        play_sound(temp_path)
                     
                     if callback:
                         callback("done")
