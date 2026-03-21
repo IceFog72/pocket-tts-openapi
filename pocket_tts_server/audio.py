@@ -8,8 +8,18 @@ import subprocess
 import threading
 import time
 import uuid
+import wave
 from queue import Empty, Full, Queue
 from typing import AsyncIterator, Optional, Tuple
+
+# Patch wave.Wave_write.close to handle IOError on client disconnect
+_orig_wave_close = wave.Wave_write.close
+def _safe_wave_close(self):
+    try:
+        _orig_wave_close(self)
+    except (IOError, OSError):
+        pass  # Client disconnected during header patch — ignore
+wave.Wave_write.close = _safe_wave_close
 
 import numpy as np
 import soundfile as sf
@@ -77,7 +87,7 @@ class FileLikeQueueWriter:
         try:
             self.close()
         except Exception:
-            logger.exception("Error closing queue writer")
+            pass
         return False
 
 
@@ -204,7 +214,12 @@ def _start_ffmpeg_process(format: str, speed: float = 1.0) -> Tuple[subprocess.P
 
     r_fd, w_fd = os.pipe()
     r_file = os.fdopen(r_fd, "rb")
-    proc = subprocess.Popen(cmd, stdin=r_file, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        proc = subprocess.Popen(cmd, stdin=r_file, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        r_file.close()
+        os.close(w_fd)
+        raise
     r_file.close()
     return proc, w_fd, r_fd
 

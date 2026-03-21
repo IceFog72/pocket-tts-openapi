@@ -1,15 +1,15 @@
 # Pocket TTS OpenAPI
 
-**Fast, local, OpenAI-compatible Text-to-Speech server** powered by [Kyutai's Pocket TTS](https://kyutai.org/blog/2026-01-13-pocket-tts).
+**Fast, local, multi-protocol Text-to-Speech server** powered by [Kyutai's Pocket TTS](https://kyutai.org/blog/2026-01-13-pocket-tts).
 
 - 🚀 **Runs at 1.5x real-time** on older CPUs (tested on Haswell)
 - 🎭 **Voice cloning support** - use your own `.wav` files
 - ⚡ **Optimized Loading** - converts voices to `.safetensors` for instant startup
 - 📦 **Audio caching** - instant response for repeated phrases
-- 🛰️ **Streaming Support** - real-time audio generation (OpenAI compatible)
+- 🛰️ **Streaming Support** - real-time audio generation
 - 🛡️ **Stuttering Protection** - runs with High Priority to prevent choppiness under load
-- 🌐 **OpenAI API compatible** - works with existing tools
-- 🏡 **Perfect for Home Assistant** via [OpenAI TTS Component](https://github.com/sfortis/openai_tts)
+- 🌐 **Multi-protocol**: OpenAI standard, XTTS-compatible, WebSocket, and GET streaming
+- 🤖 **SillyTavern ready** - works with XTTSv2 and OpenAI Compatible TTS providers
 
 ## Installation
 
@@ -37,13 +37,77 @@ To get the latest version of the project:
 
 ---
 
+## API Endpoints
+
+**Server:** `http://localhost:8005`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Server status |
+| POST | `/v1/audio/speech` | Generate audio (OpenAI standard) |
+| GET | `/tts_stream?text=...&voice=...` | Stream audio via GET |
+| POST | `/tts_to_audio/` | Generate audio (XTTS format) |
+| GET | `/v1/voices` | Voice list (OpenAI format) |
+| GET | `/speakers` | Voice list (XTTS format) |
+| WS | `/v1/audio/stream` | WebSocket streaming |
+
+### OpenAI Standard
+
+```bash
+curl http://localhost:8005/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello!", "voice": "nova", "response_format": "mp3"}' \
+  --output hello.mp3
+```
+
+### XTTS-Compatible (GET Streaming)
+
+```bash
+curl "http://localhost:8005/tts_stream?text=Hello&voice=nova&format=mp3" \
+  --output hello.mp3
+```
+
+### WebSocket
+
+```python
+import asyncio, json, websockets
+
+async def stream_tts():
+    async with websockets.connect("ws://localhost:8005/v1/audio/stream") as ws:
+        await ws.send(json.dumps({"text": "Hello", "voice": "nova", "format": "mp3"}))
+        while True:
+            msg = await ws.recv()
+            if isinstance(msg, bytes):
+                with open("out.mp3", "ab") as f:
+                    f.write(msg)
+            elif json.loads(msg).get("status") == "done":
+                break
+
+asyncio.run(stream_tts())
+```
+
+---
+
+## SillyTavern Integration
+
+The server works with two SillyTavern providers:
+
+| Provider | Set endpoint to | Voices auto-discovered |
+|----------|----------------|----------------------|
+| **XTTSv2** | `http://host:8005` | Yes |
+| **Pocket TTS** | `http://host:8005` | Yes |
+
+Just select the provider, set the URL, and the voices appear automatically.
+
+---
+
 ## 🖥️ Ice Open TTS Proxy (GUI & AI Agent Bridge)
 
-For a more robust desktop experience and seamless AI integration, use the built-in **Ice Open TTS Proxy**.
+For a desktop experience and AI integration, use the **Ice Open TTS Proxy**.
 
-- 🎨 **Desktop GUI**: Clean interface with text input, voice selection, and playback controls.
-- ⚡ **Live Mode**: Advanced streaming mode that speaks as you type with real-time setting sync.
-- 🤖 **AI Agent Bridge**: Built-in OpenAI-compatible API server (Port 8181) for easy integration with tools like **SillyTavern**.
+- 🎨 **Desktop GUI**: Text input, voice selection, playback controls.
+- ⚡ **Live Mode**: Speaks as you type with real-time setting sync.
+- 🤖 **AI Agent Bridge**: OpenAI-compatible API server on port 8181.
 
 ### Launching the Proxy
 1. Ensure the main TTS server is running (Step 2 above).
@@ -51,106 +115,55 @@ For a more robust desktop experience and seamless AI integration, use the built-
 3. **Windows**: Run `start_ice_gui.bat`
 4. **Linux**: Run `./start_ice_gui.sh`
 
-See **[AGENTS.md](file:///home/icefog/LLM/pocket-tts-openapi/ice-open-tts-proxy/AGENTS.md)** for detailed AI Agent integration guides.
+See **[AGENTS.md](ice-open-tts-proxy/AGENTS.md)** for detailed AI Agent integration.
 
 ---
-
-**Server runs at** `http://localhost:8005` (or next available port)
 
 ## Features
 
 ### Built-in Voices
-Use preset voices without any setup:
 - **Pocket TTS**: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`
 - **OpenAI aliases**: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`
+- **Custom**: place `.wav` files in `voices/` (auto-converted to `.safetensors`)
 
 ### Voice Cloning & Embeddings
 
-The server uses two folders to manage custom voices:
-- `voices/`: Place your source `.wav` files here.
-- `embeddings/`: Optimized `.safetensors` embeddings are stored here for instant loading.
+- `voices/`: Place your source `.wav` files here (~10 seconds for best results).
+- `embeddings/`: Optimized `.safetensors` are stored here for instant loading.
 
 #### Setup Authentication
-To use custom voices, authenticate with HuggingFace:
-1. **Accept License**: Visit https://huggingface.co/kyutai/pocket-tts
-2. **Login locally**: `huggingface-cli login` (enter your token from HF settings)
-3. **Restart** the server
-
-#### Adding Custom Voices
-1. Place `.wav` files in the `voices/` folder.
-   - **Tip**: For best results, use a clean voice sample that is approximately **10 seconds** long.
-2. Start the server. It will automatically convert WAVs to `.safetensors` in the `embeddings/` folder.
-3. From then on, the voice will load nearly instantly from the embedding!
-4. Use via API: `"voice": "filename"`
+1. Accept license at https://huggingface.co/kyutai/pocket-tts
+2. Login: `huggingface-cli login`
+3. Restart the server
 
 ### Audio Quality & Performance
-- **High Priority Mode**: On Windows, the server automatically runs as a High Priority process to ensure smooth audio even when the system is under heavy load (e.g., gaming).
-- **Quality Parameters**: You can now control the output quality via the API:
-  - `temperature`: Control diversity/naturalness (0.0 to 2.0, default 0.7).
-  - `lsd_decode_steps`: Control quality (1 to 50, default 2). Higher is better but slower.
-- **Large Block Handling**: The server automatically splits large text (over 500 characters) into sentences and streams them sequentially, avoiding "Maximum generation length" errors.
-- **Model Tiers**: You can choose between different performance/quality trade-offs:
-  - `tts-1`: Standard quality, fastest (default).
-  - `tts-1-hd`: High definition quality (automatically increases decode steps).
-  - `tts-1-cuda`: Standard quality using GPU acceleration.
-  - `tts-1-hd-cuda`: High definition quality using GPU acceleration.
-  > [!TIP]
-  > You can set the default tier in `config.ini` under the `[tts]` section.
+- **High Priority Mode**: Auto-runs as High Priority on Windows.
+- **Quality Parameters**: `temperature` (0.0-2.0), `lsd_decode_steps` (1-50).
+- **Large Block Handling**: Auto-splits long text into sentences.
+- **Model Tiers**: `tts-1` (fast), `tts-1-hd` (quality), `tts-1-cuda`, `tts-1-hd-cuda`.
 
 ### Audio Caching
-- Automatically caches generated files (default limit: 10).
-- Cache keys include voice, text, and quality parameters (changing temperature/steps triggers fresh generation).
+- Auto-caches generated files (default: 10).
+- Cache includes voice, text, and quality parameters.
 - Cache hit = instant response.
-
-## API Documentation
-
-### 1. Speech Generation (`/v1/audio/speech`)
-OpenAI-compatible endpoint for generating speech.
-
-**Example:**
-```bash
-curl http://localhost:8005/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "Hello! This is high quality audio.",
-    "voice": "nova",
-    "response_format": "mp3",
-    "speed": 1.0,
-    "temperature": 0.5,
-    "lsd_decode_steps": 4,
-    "stream": true
-  }' \
-  --output test.mp3
-```
-
-**Supported formats:** `mp3`, `wav`, `opus`, `aac`, `flac`, `pcm`
 
 ## Troubleshooting
 
-### Voice Cloning Not Working
-- **Error: "401 Unauthorized"** → Need to authenticate (see above)
-
-### Server Won't Start
+- **401 Unauthorized** → Run `huggingface-cli login`
 - **Port conflict** → Server auto-selects next free port
-- **Model download slow** → First run downloads ~236MB model
-- Check console for error messages
+- **Slow first run** → Downloads ~236MB model
 
 ## Technical Notes
 
-- **Platform**: Windows and Linux (macOS should work but untested)
-- **Dependencies**: Python 3.10+, FFmpeg (for MP3/AAC/etc encoding)
-- **Windows MP3**: Uses `mp3_mf` encoder (MediaFoundation) with auto-resampling to 44.1kHz
-- **Linux MP3**: Uses `libmp3lame` if available in your FFmpeg build
-- **Cache location**: `./audio_cache/` (auto-limited to 10 files by default)
-- **Model cache**: Default HuggingFace cache (`~/.cache/huggingface`)
+- **Platform**: Windows and Linux
+- **Dependencies**: Python 3.10+, FFmpeg (for MP3/AAC/etc)
+- **Cache**: `./audio_cache/`
+- **Model cache**: `~/.cache/huggingface`
 
 ## Feedback
 
-Join my Discord: [https://discord.gg/2tJcWeMjFQ](https://discord.gg/2tJcWeMjFQ)
-Or find me on the official SillyTavern Discord server.
+Discord: [https://discord.gg/2tJcWeMjFQ](https://discord.gg/2tJcWeMjFQ) • SillyTavern Discord
 
-Support me:
 [Ko-fi](https://ko-fi.com/icefog72) • [Patreon](https://www.patreon.com/cw/IceFog72)
----
-Inspired by [kyutai-tts-openai-api](https://github.com/dwain-barnes/kyutai-tts-openai-api)
 
+Inspired by [kyutai-tts-openai-api](https://github.com/dwain-barnes/kyutai-tts-openai-api)

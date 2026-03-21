@@ -6,7 +6,7 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -115,10 +115,9 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
-    allow_origin_regex=settings.allowed_origin_regex,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -145,6 +144,14 @@ async def get_voices():
     voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
     voices.update(VOICE_MAPPING.keys())
     return {"voices": sorted(list(voices))}
+
+
+@app.get("/speakers")
+async def get_speakers():
+    """XTTS-compatible voice list endpoint (returns objects with name and voice_id)."""
+    voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
+    voices.update(VOICE_MAPPING.keys())
+    return [{"name": v, "voice_id": v} for v in sorted(voices)]
 
 
 @app.get("/v1/formats")
@@ -258,6 +265,129 @@ async def health():
                            if f.endswith(CACHE_EXTENSIONS)]) if os.path.exists(settings.audio_cache_dir) else 0,
     }
 
+
+@app.websocket("/v1/audio/stream")
+async def websocket_tts(websocket: WebSocket):
+    """WebSocket endpoint for real-time TTS streaming.
+
+    Protocol:
+      Client → Server: {"text": "Hello world", "voice": "nova", "format": "wav", "speed": 1.0}
+      Server → Client: binary audio chunks
+      Server → Client: {"status": "done"}  (when generation complete)
+
+    Can be called multiple times per connection for sequential generations.
+    """
+    await websocket.accept()
+
+    if not model_manager.is_loaded:
+        await websocket.send_json({"error": "TTS model not loaded", "status": "error"})
+        await websocket.close(code=1011)
+        return
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+
+            text = data.get("input") or data.get("text", "")
+            voice = data.get("voice", "alloy")
+            fmt = data.get("format") or data.get("response_format", "wav")
+            speed = float(data.get("speed", 1.0))
+            temperature = float(data.get("temperature", settings.temperature))
+            top_p = float(data.get("top_p", settings.top_p))
+            repetition_penalty = float(data.get("repetition_penalty", settings.repetition_penalty))
+            lsd_decode_steps = int(data.get("lsd_decode_steps", settings.lsd_decode_steps))
+            model_tier = data.get("model", settings.model_tier)
+
+            if not text.strip():
+                await websocket.send_json({"error": "Empty text", "status": "error"})
+                continue
+
+            try:
+                async for chunk in generate_audio(
+                    text=text, voice=voice, speed=speed, format=fmt,
+                    temperature=temperature, top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    lsd_decode_steps=lsd_decode_steps, model_tier=model_tier,
+                ):
+                    await websocket.send_bytes(chunk)
+                await websocket.send_json({"status": "done"})
+            except Exception as e:
+                logger.exception(f"WebSocket generation error")
+                await websocket.send_json({"error": str(e), "status": "error"})
+
+    except WebSocketDisconnect:
+        logger.debug("WebSocket client disconnected")
+    except Exception as e:
+        logger.warning(f"WebSocket error: {e}")
+
+
+# ============================================================================
+# XTTS-COMPATIBLE ENDPOINTS (GET streaming + POST)
+# ============================================================================
+
+@app.get("/tts_stream")
+@app.get("/v1/audio/speech/tts_stream")
+async def xtts_stream_get(
+    text: str = "",
+    speaker_wav: str = "nova",
+    language: str = "en",
+    voice: str = "",
+    format: str = "mp3",
+    speed: float = 1.0,
+) -> StreamingResponse:
+    """XTTS-compatible GET streaming endpoint. Defaults to MP3 for browser playback."""
+    v = voice or speaker_wav
+    if not v:
+        v = "nova"
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    return StreamingResponse(
+        generate_audio(text=text, voice=v, speed=speed, format=format),
+        media_type=MEDIA_TYPES.get(format, "audio/mpeg"),
+        headers={"Transfer-Encoding": "chunked", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/tts_to_audio")
+@app.post("/tts_to_audio/")
+@app.post("/v1/audio/speech/tts_to_audio")
+async def xtts_post(request: Request) -> StreamingResponse:
+    """XTTS-compatible POST endpoint."""
+    data = await request.json()
+    text = data.get("text", "")
+    voice = data.get("speaker_wav") or data.get("voice", "nova")
+    language = data.get("language", "en")
+    speed = float(data.get("speed", 1.0))
+    fmt = data.get("format", "wav")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    return StreamingResponse(
+        generate_audio(text=text, voice=voice, speed=speed, format=fmt),
+        media_type=MEDIA_TYPES.get(fmt, "audio/wav"),
+        headers={"Transfer-Encoding": "chunked", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/set_tts_settings")
+@app.post("/v1/audio/speech/set_tts_settings")
+@app.options("/set_tts_settings")
+@app.options("/v1/audio/speech/set_tts_settings")
+async def xtts_set_settings(request: Request):
+    """XTTS-compatible settings endpoint (accepts and ignores params)."""
+    return {"status": "ok"}
+
+
+@app.get("/v1/audio/speech/speakers")
+async def xtts_speakers_nested():
+    """Voice list at nested path (for misconfigured endpoints)."""
+    voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
+    voices.update(VOICE_MAPPING.keys())
+    return [{"name": v, "voice_id": v} for v in sorted(voices)]
+
+
+# ============================================================================
+# MAIN
+# ============================================================================
 
 def main():
     log_config = uvicorn.config.LOGGING_CONFIG
