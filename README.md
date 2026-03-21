@@ -111,11 +111,11 @@ For a desktop experience and AI integration, use the **Ice Open TTS Proxy**.
 
 ### Launching the Proxy
 1. Ensure the main TTS server is running (Step 2 above).
-2. Go to the `ice-open-tts-proxy/` directory.
+2. Go to the `ice-open-tts-test-proxy/` directory.
 3. **Windows**: Run `start_ice_gui.bat`
 4. **Linux**: Run `./start_ice_gui.sh`
 
-See **[AGENTS.md](ice-open-tts-proxy/AGENTS.md)** for detailed AI Agent integration.
+See **[AGENTS.md](ice-open-tts-test-proxy/AGENTS.md)** for detailed AI Agent integration.
 
 ---
 

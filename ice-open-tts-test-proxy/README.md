@@ -159,7 +159,7 @@ RUN_INTEGRATION_TESTS=1 python test_ice_open_tts_proxy.py -v
 ## Files
 
 ```
-ice-open-tts-proxy/
+ice-open-tts-test-proxy/
 ├── ice_open_tts_proxy.py          # GUI version
 ├── ice_open_tts_proxy_cli.py      # CLI version
 ├── test_ice_open_tts_proxy.py     # Unit tests (42 tests)
