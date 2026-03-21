@@ -20,14 +20,18 @@ mock_tts_model_class = MagicMock(return_value=mock_tts_model)
 
 with patch('pocket_tts.TTSModel.load_model', return_value=mock_tts_model):
     with patch('pocket_tts.TTSModel', mock_tts_model_class):
-        from pocketapi import (
+        from pocket_tts_server import (
             app, model_manager, settings, sanitize_text_input, is_valid_voice_name,
-            ModelManager, RateLimiter, CacheManager, FileLikeQueueWriter,
-            check_hf_auth, has_voice_cloning, check_ffmpeg, _ffmpeg_available,
+            RateLimiter, CacheManager, FileLikeQueueWriter,
+            check_ffmpeg,
             VOICE_MAPPING, DEFAULT_VOICES, FFMPEG_FORMATS, MEDIA_TYPES,
-            CACHE_EXTENSIONS, Colors, load_custom_voices,
+            CACHE_EXTENSIONS, Colors,
             SpeechRequest, ExportVoiceRequest,
         )
+        from pocket_tts_server.model_manager import ModelManager
+        from pocket_tts_server.audio import _ffmpeg_available, generate_audio, _generate_audio_core
+        from pocket_tts_server.api import check_hf_auth, has_voice_cloning
+        from pocket_tts_server.voices import load_custom_voices
 
 client = TestClient(app)
 
@@ -578,24 +582,24 @@ class TestFFmpegCheck:
         assert isinstance(result, bool)
 
     def test_ffmpeg_unavailable_mock(self):
-        with patch('pocketapi.subprocess.run', side_effect=FileNotFoundError):
+        with patch('pocket_tts_server.validation.subprocess.run', side_effect=FileNotFoundError):
             assert check_ffmpeg() is False
 
     def test_ffmpeg_timeout_mock(self):
         import subprocess
-        with patch('pocketapi.subprocess.run', side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=5)):
+        with patch('pocket_tts_server.validation.subprocess.run', side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=5)):
             assert check_ffmpeg() is False
 
     def test_ffmpeg_nonzero_exit(self):
         mock_result = MagicMock()
         mock_result.returncode = 1
-        with patch('pocketapi.subprocess.run', return_value=mock_result):
+        with patch('pocket_tts_server.validation.subprocess.run', return_value=mock_result):
             assert check_ffmpeg() is False
 
     def test_ffmpeg_available_mock(self):
         mock_result = MagicMock()
         mock_result.returncode = 0
-        with patch('pocketapi.subprocess.run', return_value=mock_result):
+        with patch('pocket_tts_server.validation.subprocess.run', return_value=mock_result):
             assert check_ffmpeg() is True
 
 
@@ -757,7 +761,7 @@ class TestFormatsEndpoint:
 class TestTextToSpeechEndpoint:
     """Test the /v1/audio/speech endpoint."""
 
-    @patch('pocketapi.generate_audio')
+    @patch('pocket_tts_server.api.generate_audio')
     def test_basic_request(self, mock_gen):
         async def dummy_gen(*args, **kwargs):
             yield b"audio_data"
@@ -770,7 +774,7 @@ class TestTextToSpeechEndpoint:
         assert response.status_code == 200
         assert response.content == b"audio_data"
 
-    @patch('pocketapi.generate_audio')
+    @patch('pocket_tts_server.api.generate_audio')
     def test_custom_voice(self, mock_gen):
         async def dummy_gen(*args, **kwargs):
             yield b"data"
@@ -782,7 +786,7 @@ class TestTextToSpeechEndpoint:
         })
         assert response.status_code == 200
 
-    @patch('pocketapi.generate_audio')
+    @patch('pocket_tts_server.api.generate_audio')
     def test_all_voices_accepted(self, mock_gen):
         async def dummy_gen(*args, **kwargs):
             yield b"data"
@@ -795,7 +799,7 @@ class TestTextToSpeechEndpoint:
             })
             assert response.status_code == 200, f"Voice {voice} failed"
 
-    @patch('pocketapi.generate_audio')
+    @patch('pocket_tts_server.api.generate_audio')
     def test_all_formats_accepted(self, mock_gen):
         async def dummy_gen(*args, **kwargs):
             yield b"data"
@@ -844,7 +848,7 @@ class TestTextToSpeechEndpoint:
         })
         assert response.status_code == 422
 
-    @patch('pocketapi.generate_audio')
+    @patch('pocket_tts_server.api.generate_audio')
     def test_custom_parameters(self, mock_gen):
         async def dummy_gen(*args, **kwargs):
             yield b"data"
@@ -861,7 +865,7 @@ class TestTextToSpeechEndpoint:
         })
         assert response.status_code == 200
 
-    @patch('pocketapi.generate_audio')
+    @patch('pocket_tts_server.api.generate_audio')
     def test_response_headers(self, mock_gen):
         async def dummy_gen(*args, **kwargs):
             yield b"data"
@@ -880,7 +884,7 @@ class TestTextToSpeechEndpoint:
 class TestRateLimitMiddleware:
     """Test rate limiting middleware."""
 
-    @patch('pocketapi.rate_limiter.is_allowed')
+    @patch('pocket_tts_server.api.rate_limiter.is_allowed')
     def test_returns_429_when_limited(self, mock_allowed):
         mock_allowed.return_value = (False, 30)
         response = client.get("/v1/voices")
@@ -889,13 +893,13 @@ class TestRateLimitMiddleware:
         data = response.json()
         assert "Rate limit exceeded" in data["error"]
 
-    @patch('pocketapi.rate_limiter.is_allowed')
+    @patch('pocket_tts_server.api.rate_limiter.is_allowed')
     def test_passes_when_allowed(self, mock_allowed):
         mock_allowed.return_value = (True, 0)
         response = client.get("/v1/voices")
         assert response.status_code == 200
 
-    @patch('pocketapi.rate_limiter.is_allowed')
+    @patch('pocket_tts_server.api.rate_limiter.is_allowed')
     def test_uses_forwarded_for_header(self, mock_allowed):
         mock_allowed.return_value = (True, 0)
         client.get("/v1/voices", headers={"X-Forwarded-For": "1.2.3.4, 5.6.7.8"})
@@ -940,14 +944,14 @@ class TestCachingIntegration:
     """Test caching behavior end-to-end."""
 
     @patch('os.path.exists')
-    @patch('pocketapi.open_file', new_callable=AsyncMock)
+    @patch('pocket_tts_server.audio.open_file', new_callable=AsyncMock)
     def test_cache_hit_returns_cached(self, mock_open, mock_exists):
         mock_exists.return_value = True
         mock_file = AsyncMock()
         mock_file.read.side_effect = [b"cached_audio", b""]
         mock_open.return_value.__aenter__.return_value = mock_file
 
-        from pocketapi import generate_audio
+        from pocket_tts_server.audio import generate_audio
         import asyncio
 
         async def run_gen():
@@ -959,7 +963,7 @@ class TestCachingIntegration:
         result = asyncio.run(run_gen())
         assert result == b"cached_audio"
 
-    @patch('pocketapi.generate_audio')
+    @patch('pocket_tts_server.api.generate_audio')
     def test_different_params_different_cache(self, mock_gen):
         cm = CacheManager()
         key1 = cm.generate_cache_key("text", "alloy", "wav", 1.0, 0.7, 2, 0.95, 1.1, "tts-1")
@@ -975,7 +979,7 @@ class TestGenerateAudio:
     """Test the generate_audio function."""
 
     def test_raises_when_model_not_loaded(self):
-        from pocketapi import generate_audio
+        from pocket_tts_server.audio import generate_audio
         import asyncio
 
         async def run():
@@ -987,7 +991,7 @@ class TestGenerateAudio:
                 asyncio.run(run())
 
     def test_raises_on_invalid_voice(self):
-        from pocketapi import generate_audio
+        from pocket_tts_server.audio import generate_audio
         import asyncio
 
         async def run():
@@ -998,7 +1002,7 @@ class TestGenerateAudio:
             asyncio.run(run())
 
     def test_raises_on_empty_text(self):
-        from pocketapi import generate_audio
+        from pocket_tts_server.audio import generate_audio
         import asyncio
 
         async def run():
@@ -1008,9 +1012,9 @@ class TestGenerateAudio:
         with pytest.raises(Exception):
             asyncio.run(run())
 
-    @patch('pocketapi._ffmpeg_available', False)
+    @patch('pocket_tts_server.audio._ffmpeg_available', False)
     def test_raises_without_ffmpeg_for_mp3(self):
-        from pocketapi import _generate_audio_core
+        from pocket_tts_server.audio import _generate_audio_core
         import asyncio
 
         async def run():
@@ -1020,9 +1024,9 @@ class TestGenerateAudio:
         with pytest.raises(Exception, match="FFmpeg required"):
             asyncio.run(run())
 
-    @patch('pocketapi._ffmpeg_available', False)
+    @patch('pocket_tts_server.audio._ffmpeg_available', False)
     def test_raises_without_ffmpeg_for_speed(self):
-        from pocketapi import _generate_audio_core
+        from pocket_tts_server.audio import _generate_audio_core
         import asyncio
 
         async def run():

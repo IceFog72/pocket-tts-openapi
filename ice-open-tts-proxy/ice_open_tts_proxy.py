@@ -569,6 +569,15 @@ class APIServer:
                 "audio_playing": self.audio_player.is_playing
             })
 
+        @self.flask_app.route('/shutdown', methods=['POST'])
+        def shutdown():
+            func = request.environ.get('werkzeug.server.shutdown')
+            if func is None:
+                self.is_running = False
+                return jsonify({"status": "shutting_down"})
+            func()
+            return jsonify({"status": "shutting_down"})
+
         @self.flask_app.route('/speak', methods=['POST'])
         @self.flask_app.route('/tts_and_play', methods=['POST'])
         def speak():
@@ -677,6 +686,14 @@ class APIServer:
     def stop(self):
         """Stop the API server."""
         self.is_running = False
+        if self.flask_app:
+            try:
+                # Use Flask's built-in shutdown endpoint
+                import requests
+                requests.post(f"http://{self.host}:{self.port}/shutdown", timeout=2)
+            except Exception:
+                pass
+            self.flask_app = None
 
 
 # =============================================================================
