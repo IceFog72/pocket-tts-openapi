@@ -98,7 +98,7 @@ To use custom voices, authenticate with HuggingFace:
   > You can set the default tier in `config.ini` under the `[tts]` section.
 
 ### Audio Caching
-- Automatically caches generated files (default limit: 50).
+- Automatically caches generated files (default limit: 10).
 - Cache keys include voice, text, and quality parameters (changing temperature/steps triggers fresh generation).
 - Cache hit = instant response.
 
@@ -141,7 +141,7 @@ curl http://localhost:8005/v1/audio/speech \
 - **Dependencies**: Python 3.10+, FFmpeg (for MP3/AAC/etc encoding)
 - **Windows MP3**: Uses `mp3_mf` encoder (MediaFoundation) with auto-resampling to 44.1kHz
 - **Linux MP3**: Uses `libmp3lame` if available in your FFmpeg build
-- **Cache location**: `./audio_cache/` (auto-limited to 10 files)
+- **Cache location**: `./audio_cache/` (auto-limited to 10 files by default)
 - **Model cache**: Default HuggingFace cache (`~/.cache/huggingface`)
 
 ## Feedback

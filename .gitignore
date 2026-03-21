@@ -3,6 +3,10 @@ venv/
 env/
 ENV/
 
+# Environment secrets
+.env
+.env.local
+
 # Cache directories
 __pycache__/
 *.pyc

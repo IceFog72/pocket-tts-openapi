@@ -1,9 +1,17 @@
 #!/bin/bash
 
 # Default port if not specified
-DEFAULT_PORT=8001
+DEFAULT_PORT=8005
 CONFIG_FILE="config.ini"
 SCRIPT_NAME="pocketapi.py"
+
+# Try to read port from config.ini
+if [ -f "$CONFIG_FILE" ]; then
+    CONFIG_PORT=$(grep -E '^server_port\s*=' "$CONFIG_FILE" | head -1 | sed 's/.*=\s*//' | tr -d '[:space:]')
+    if [ -n "$CONFIG_PORT" ] && [ "$CONFIG_PORT" -eq "$CONFIG_PORT" ] 2>/dev/null; then
+        DEFAULT_PORT=$CONFIG_PORT
+    fi
+fi
 
 # Check if port is in use and get PID + process name
 check_port() {

@@ -189,8 +189,8 @@ MEDIA_TYPES: Dict[str, str] = {
     "pcm": "audio/pcm",
 }
 
-# Valid file extensions for cache
-CACHE_EXTENSIONS = tuple(list(FFMPEG_FORMATS.keys()) + ["wav", "pcm"])
+# Valid file extensions for cache (with dot for pathlib suffix matching)
+CACHE_EXTENSIONS = tuple("." + ext for ext in list(FFMPEG_FORMATS.keys()) + ["wav", "pcm"])
 
 # ============================================================================
 # PYDANTIC MODELS (MUST BE DEFINED BEFORE ENDPOINTS)
@@ -208,12 +208,13 @@ class SpeechRequest(BaseModel):
     top_p: float = Field(default_factory=lambda: settings.top_p, ge=0.1, le=1.0, description="Nucleus sampling")
     repetition_penalty: float = Field(default_factory=lambda: settings.repetition_penalty, ge=1.0, le=2.0)
     lsd_decode_steps: int = Field(default_factory=lambda: settings.lsd_decode_steps, ge=1, le=50)
-    stream: bool = Field(False, description="Presence of this flag is for compatibility, streaming is always enabled")
+    stream: bool = Field(True, description="OpenAI API compatibility parameter (streaming is always enabled in this server)")
 
     @field_validator("model", mode="before")
     @classmethod
     def validate_model(cls, v: str) -> str:
         if not v:
+            logger.debug("Empty model specified, falling back to settings.model_tier")
             return settings.model_tier
         return v
 
@@ -632,6 +633,26 @@ def set_high_priority() -> None:
 
 
 # ============================================================================
+# FFmpeg CHECK
+# ============================================================================
+
+def check_ffmpeg() -> bool:
+    """Check if FFmpeg is installed and available."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+_ffmpeg_available = check_ffmpeg()
+
+
+# ============================================================================
 # MONKEY PATCH
 # ============================================================================
 
@@ -767,7 +788,6 @@ def _start_audio_producer(
                     model_state = tts_model.get_state_for_audio_prompt(voice_name)
                 
                 # Split text into manageable sentences/clauses (threshold ~500 chars)
-                import re
                 parts = re.split(r'(?<=[.!?])\s+', text.strip())
                 
                 def combined_chunks():
@@ -899,6 +919,10 @@ async def _generate_audio_core(
     model_tier: str = settings.model_tier,
 ) -> AsyncIterator[bytes]:
     """Internal generator for the actual TTS + FFmpeg logic."""
+    needs_ffmpeg = format in FFMPEG_FORMATS or (format in ("wav", "pcm") and speed != 1.0)
+    if needs_ffmpeg and not _ffmpeg_available:
+        raise HTTPException(status_code=400, detail=f"FFmpeg required for format '{format}' or speed adjustment, but FFmpeg is not installed")
+    
     queue = Queue(maxsize=settings.queue_size)
     queue.abort = False
     producer_thread = _start_audio_producer(
@@ -1088,6 +1112,12 @@ async def lifespan(app: FastAPI):
     logger.info("Starting TTS API server...")
     set_high_priority()
     
+    # Check FFmpeg availability
+    if not _ffmpeg_available:
+        logger.warning(f"{Colors.YELLOW}FFmpeg not found. MP3/Opus/AAC/FLAC formats will not work. Install FFmpeg to enable.{Colors.RESET}")
+    else:
+        logger.info("FFmpeg: Available")
+    
     # Setup HuggingFace auth for voice cloning
     await asyncio.to_thread(setup_hf_auth)
     
@@ -1195,6 +1225,10 @@ async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks)
     """Generate speech audio from text with streaming response."""
     try:
         logger.info(f"TTS request: voice='{data.voice}', format='{data.response_format}', len={len(data.input)}")
+        
+        # Pre-validate voice name before starting streaming response
+        if not is_valid_voice_name(data.voice) and data.voice.lower() not in VOICE_MAPPING and data.voice not in VOICE_MAPPING:
+            raise HTTPException(status_code=400, detail="Invalid voice name")
         
         return StreamingResponse(
             generate_audio(

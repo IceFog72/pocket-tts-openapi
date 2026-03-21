@@ -130,75 +130,6 @@ def setup_audio_backend():
     
     return False
     
-    def save(self):
-        """Save the configuration to the INI file."""
-        with open(self.config_path, 'w') as f:
-            self.parser.write(f)
-
-
-# =============================================================================
-# TTS Client
-# =============================================================================
-
-class TTSClient:
-    """Client for communicating with Pocket TTS server."""
-    
-    def __init__(self, base_url: str):
-        self.base_url = base_url.rstrip('/')
-    
-    def get_voices(self) -> list:
-        """Get available voices from TTS server."""
-        log = logging.getLogger("tts_proxy.client")
-        try:
-            log.debug(f"Fetching voices from {self.base_url}")
-            resp = requests.get(f"{self.base_url}/v1/voices", timeout=5)
-            resp.raise_for_status()
-            voices = resp.json().get("voices", [])
-            log.info(f"Fetched {len(voices)} voices")
-            return voices
-        except Exception as e:
-            log.error(f"Error fetching voices: {e}")
-            print(f"Error fetching voices: {e}")
-            return ["nova", "alloy", "echo", "fable", "onyx", "shimmer"]
-
-    def generate_speech(self, text: str, voice: str, speed: float = 1.0,
-                        format: str = "wav") -> Optional[bytes]:
-        """Generate speech and return audio bytes."""
-        log = logging.getLogger("tts_proxy.client")
-        payload = {
-            "input": text,
-            "voice": voice,
-            "response_format": format,
-            "speed": speed
-        }
-        try:
-            log.info(f"Generating speech: voice={voice}, speed={speed}, text_len={len(text)}")
-            start_time = time.time()
-            resp = requests.post(
-                f"{self.base_url}/v1/audio/speech",
-                json=payload,
-                timeout=60
-            )
-            resp.raise_for_status()
-            elapsed = time.time() - start_time
-            log.info(f"Speech generated: {len(resp.content)} bytes in {elapsed:.2f}s")
-            return resp.content
-        except Exception as e:
-            log.error(f"Error generating speech: {e}")
-            print(f"Error generating speech: {e}")
-            return None
-
-    def health_check(self) -> bool:
-        """Check if TTS server is running."""
-        log = logging.getLogger("tts_proxy.client")
-        try:
-            resp = requests.get(f"{self.base_url}/health", timeout=3)
-            healthy = resp.status_code == 200
-            log.debug(f"Health check: {'OK' if healthy else 'FAILED'}")
-            return healthy
-        except Exception as e:
-            log.warning(f"Health check failed: {e}")
-            return False
 
 
 # =============================================================================
@@ -435,7 +366,7 @@ class OpenAITTSStreamingManager:
                 # We'll temporarily set is_active to True for this last call.
                 was_active = self.is_active
                 self.is_active = True
-                self._process_text(text)
+                self._process_text_with_splitting(text)
                 self.is_active = was_active
 
     def set_voice(self, voice: str) -> None:
@@ -1257,7 +1188,7 @@ def main():
     _config = Config()
     
     parser = argparse.ArgumentParser(description="TTS Speaker - GUI and API for Pocket TTS")
-    parser.add_argument("--tts-url", default=_config.get("tts_server_url", "http://localhost:8001"),
+    parser.add_argument("--tts-url", default=_config.get("tts_server_url", "http://localhost:8005"),
                         help="Pocket TTS server URL")
     parser.add_argument("--port", type=int, default=_config.getint("api_port", 8181),
                         help="API server port")

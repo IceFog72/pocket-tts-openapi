@@ -41,7 +41,7 @@ class Config:
     def _create_default(self):
         """Create a default configuration file."""
         self.parser['server'] = {
-            'tts_server_url': 'http://localhost:8001',
+            'tts_server_url': 'http://localhost:8005',
             'api_host': '127.0.0.1',
             'api_port': '8181',
             'default_voice': 'nova',

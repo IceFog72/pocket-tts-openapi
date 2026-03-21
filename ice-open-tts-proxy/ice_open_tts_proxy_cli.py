@@ -479,41 +479,6 @@ Examples:
             run_server(args.tts_url, args.host, args.port)
         return
     
-    if args.voices:
-        list_voices(args.tts_url)
-        return
-    
-    if args.server:
-        # Setup feed queue if --feed flag is provided
-        feed_queue_local = queue.Queue() if args.feed else None
-        run_server(args.tts_url, args.host, args.port, feed_queue_local)
-        
-        # If feed is enabled, display requests in real-time
-        if args.feed:
-            print("\n📡 Request Feed (press Ctrl+C to stop):")
-            print("-" * 50)
-            try:
-                while True:
-                    try:
-                        msg = feed_queue_local.get(timeout=0.1)
-                        timestamp = time.strftime("%H:%M:%S", time.localtime(msg.get('timestamp', time.time())))
-                        msg_type = msg.get('type', 'unknown')
-                        text = msg.get('text', '')
-                        voice = msg.get('voice', 'unknown')
-                        fmt = msg.get('format', 'wav')
-                        stream = msg.get('stream', False)
-                        
-                        line = f"[{timestamp}] {voice} ({fmt}"
-                        if stream:
-                            line += ", stream"
-                        line += f"): {text}"
-                        print(line)
-                    except queue.Empty:
-                        continue
-            except KeyboardInterrupt:
-                print("\nFeed stopped.")
-        return
-    
     # Get text
     text = None
     if args.text:
