@@ -19,7 +19,7 @@ POST /set_tts_settings        → accepts params (no-op)
 ```
 Works with SillyTavern's XTTSv2 provider out of the box.
 
-### WebSocket (Agent Use)
+### WebSocket
 ```
 ws://localhost:8005/v1/audio/stream
 → send {"text": "...", "voice": "nova"}
@@ -34,14 +34,4 @@ Two providers work with the same server:
 | Provider | Endpoint to set | Auto-discovers voices |
 |----------|----------------|----------------------|
 | XTTSv2 | `http://host:8005` | Yes (`/speakers`) |
-| Pocket TTS (new) | `http://host:8005` | Yes (`/v1/voices`) |
 
-No need to manually type voice names.
-
-## Bug Fixes
-
-- WAV streaming now defaults to MP3 for browser playback
-- WAV writer cleanup no longer logs errors on client disconnect
-- CORS accepts all origins (was rejecting LAN IPs)
-- Nested routes added (`/v1/audio/speech/speakers`, etc.) for misconfigured endpoints
-- `/speakers` returns objects with `name` and `voice_id` (XTTS format)
