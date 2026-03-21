@@ -457,15 +457,38 @@ class AudioPlayer:
                 self.is_playing = True
                 self.log.debug(f"Playing audio: {len(audio_data)} bytes")
 
+                # Detect format from magic bytes
+                if audio_data[:3] == b'ID3' or audio_data[:2] == b'\xff\xfb' or audio_data[:2] == b'\xff\xf3':
+                    suffix = ".mp3"
+                elif audio_data[:4] == b'OggS':
+                    suffix = ".ogg"
+                elif audio_data[:4] == b'fLaC':
+                    suffix = ".flac"
+                elif audio_data[:4] == b'RIFF':
+                    suffix = ".wav"
+                else:
+                    suffix = ".wav"
+
                 # Save to temp file
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                     f.write(audio_data)
                     temp_path = f.name
                 
                 try:
                     # Multi-platform process-based playback (required for interruption)
                     success = False
-                    
+                    import subprocess
+
+                    # Wake up audio device (PulseAudio/PipeWire goes to sleep between plays)
+                    if sys.platform == "linux":
+                        try:
+                            subprocess.run(["pw-cat", "--playback", "/dev/null"],
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL, timeout=1)
+                        except Exception:
+                            pass
+                        time.sleep(0.15)
+
                     if sys.platform == "win32":
                         # Windows: Try common process-based players
                         for cmd_name in ["ffplay", "mpv", "powershell"]:
@@ -494,21 +517,22 @@ class AudioPlayer:
                                 
                     elif sys.platform == "linux" and AUDIO_BACKEND == "system":
                         # Linux: Standard system command logic
-                        for cmd_name in ["paplay", "aplay", "ffplay", "mpv"]:
+                        for cmd_name in ["ffplay", "mpv", "paplay", "aplay"]:
                             try:
                                 cmd = [cmd_name, temp_path]
                                 if cmd_name == "ffplay": cmd = ["ffplay", "-nodisp", "-autoexit", temp_path]
                                 if cmd_name == "mpv": cmd = ["mpv", "--no-video", temp_path]
-                                
+
                                 proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                 with self._lock:
                                     self.current_proc = proc
-                                
+
                                 proc.wait()
                                 with self._lock:
                                     self.current_proc = None
-                                success = True
-                                break
+                                if proc.returncode == 0:
+                                    success = True
+                                    break
                             except:
                                 continue
                     
@@ -818,7 +842,22 @@ class TTSApp:
         refresh_btn = ttk.Button(voice_frame, text="↻", width=3,
                                   command=self._refresh_voices)
         refresh_btn.pack(side=tk.LEFT)
-        
+
+        # --- API Mode ---
+        mode_frame = ttk.LabelFrame(main_frame, text="API Mode", padding="5")
+        mode_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(mode_frame, text="Mode:").pack(side=tk.LEFT)
+        self.api_mode_var = tk.StringVar(value="OpenAI POST")
+        self.api_mode_combo = ttk.Combobox(mode_frame, textvariable=self.api_mode_var,
+                                            state="readonly", width=18,
+                                            values=["OpenAI POST", "XTTS GET Stream", "XTTS POST", "WebSocket"])
+        self.api_mode_combo.pack(side=tk.LEFT, padx=5)
+
+        clear_cache_btn = ttk.Button(mode_frame, text="Clear Cache",
+                                      command=self._clear_cache)
+        clear_cache_btn.pack(side=tk.RIGHT)
+
         # --- Text Input ---
         text_frame = ttk.LabelFrame(main_frame, text="Text", padding="5")
         text_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
@@ -1047,7 +1086,7 @@ class TTSApp:
             request_serial = self.gen_serial
         
         def do_speak():
-            audio_data = self.tts_client.generate_speech(text, voice, speed)
+            audio_data = self.tts_client.generate_speech(text, voice, speed, "wav")
             
             # Check if this request is still valid
             with self.serial_lock:
@@ -1064,6 +1103,85 @@ class TTSApp:
                 self.stop_btn.config(state=tk.DISABLED)
         
         threading.Thread(target=do_speak, daemon=True).start()
+
+    def _generate_by_mode(self, text, voice, speed, fmt, mode):
+        """Generate audio using the selected API mode."""
+        import requests
+
+        base = self.tts_url.rstrip("/")
+
+        # Log to feed
+        self.feed_queue.put({
+            "timestamp": time.time(),
+            "type": "tts",
+            "text": text[:100] + ("..." if len(text) > 100 else ""),
+            "voice": voice,
+            "format": fmt,
+            "speed": speed,
+            "mode": mode,
+        })
+        
+        if mode == "OpenAI POST":
+            try:
+                r = requests.post(f"{base}/v1/audio/speech",
+                    json={"input": text, "voice": voice, "response_format": fmt, "speed": speed},
+                    timeout=60)
+                r.raise_for_status()
+                return r.content
+            except Exception as e:
+                self.log.error(f"OpenAI POST error: {e}")
+                return None
+        
+        elif mode == "XTTS GET Stream":
+            try:
+                from urllib.parse import urlencode
+                params = urlencode({"text": text, "voice": voice, "format": fmt, "speed": speed})
+                r = requests.get(f"{base}/tts_stream?{params}", timeout=60, stream=True)
+                r.raise_for_status()
+                return r.content
+            except Exception as e:
+                self.log.error(f"XTTS GET error: {e}")
+                return None
+        
+        elif mode == "XTTS POST":
+            try:
+                r = requests.post(f"{base}/tts_to_audio",
+                    json={"text": text, "speaker_wav": voice, "speed": speed, "format": fmt},
+                    timeout=60)
+                r.raise_for_status()
+                return r.content
+            except Exception as e:
+                self.log.error(f"XTTS POST error: {e}")
+                return None
+        
+        elif mode == "WebSocket":
+            try:
+                import asyncio, json as json_mod, websockets
+                return asyncio.run(self._ws_generate(base, text, voice, speed, fmt))
+            except Exception as e:
+                self.log.error(f"WebSocket error: {e}")
+                return None
+        
+        return None
+
+    async def _ws_generate(self, base, text, voice, speed, fmt):
+        """Generate audio via WebSocket."""
+        import json as json_mod, websockets
+        ws_url = base.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/stream"
+        audio = b""
+        async with websockets.connect(ws_url) as ws:
+            await ws.send(json_mod.dumps({"text": text, "voice": voice, "format": fmt, "speed": speed}))
+            while True:
+                msg = await ws.recv()
+                if isinstance(msg, bytes):
+                    audio += msg
+                else:
+                    data = json_mod.loads(msg)
+                    if data.get("status") == "done":
+                        break
+                    elif data.get("status") == "error":
+                        raise Exception(data.get("error", "Unknown error"))
+        return audio
     
     def _on_playback_done(self, result):
         """Callback when playback finishes."""
@@ -1167,9 +1285,12 @@ class TTSApp:
         voice = msg.get('voice', 'unknown')
         stream = msg.get('stream', False)
         fmt = msg.get('format', 'wav')
+        mode = msg.get('mode', '')
         
         line = f"[{timestamp}] {voice} ({fmt}"
-        if stream:
+        if mode:
+            line += f", {mode}"
+        elif stream:
             line += ", stream"
         line += f"): {text}\n"
         
@@ -1178,6 +1299,24 @@ class TTSApp:
         self.feed_text.see(tk.END)  # Scroll to bottom
         self.feed_text.config(state=tk.DISABLED)
     
+    def _clear_cache(self):
+        """Clear server audio cache."""
+        import requests
+        try:
+            r = requests.post(f"{self.tts_url.rstrip('/')}/cache/clear", timeout=10)
+            data = r.json()
+            deleted = data.get("deleted", 0)
+            self.status_queue.put(f"Cache cleared: {deleted} files deleted")
+            self._update_feed({
+                "timestamp": time.time(),
+                "type": "system",
+                "text": f"Cache cleared ({deleted} files)",
+                "voice": "",
+                "format": "",
+            })
+        except Exception as e:
+            self.status_queue.put(f"Cache clear failed: {e}")
+
     def _clear_feed(self):
         """Clear the feed display."""
         self.feed_text.config(state=tk.NORMAL)

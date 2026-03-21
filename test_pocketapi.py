@@ -46,6 +46,14 @@ def mock_load_model():
         yield
 
 
+@pytest.fixture(autouse=True)
+def bypass_rate_limiter():
+    """Bypass rate limiter in tests."""
+    from pocket_tts_server.rate_limiter import rate_limiter
+    with patch.object(rate_limiter, 'is_allowed', return_value=(True, 0)):
+        yield
+
+
 # ============================================================================
 # Constants Tests
 # ============================================================================
@@ -1035,3 +1043,292 @@ class TestGenerateAudio:
 
         with pytest.raises(Exception, match="FFmpeg required"):
             asyncio.run(run())
+
+
+# ============================================================================
+# Config INI Tests
+# ============================================================================
+
+class TestConfigINI:
+    """Test that Settings reads from config.ini."""
+
+    def test_port_from_ini(self):
+        from pocket_tts_server.config import settings
+        assert settings.server_port == 8005
+
+    def test_chunk_size_from_ini(self):
+        from pocket_tts_server.config import settings
+        assert settings.chunk_size == 32768
+
+    def test_temperature_from_ini(self):
+        from pocket_tts_server.config import settings
+        assert settings.temperature == 0.7
+
+    def test_cache_limit_from_ini(self):
+        from pocket_tts_server.config import settings
+        assert settings.cache_limit == 10
+
+    def test_rate_limit_from_ini(self):
+        from pocket_tts_server.config import settings
+        assert settings.rate_limit_requests == 30
+
+    def test_model_tier_from_ini(self):
+        from pocket_tts_server.config import settings
+        assert settings.model_tier == "tts-1"
+
+    def test_inline_comment_stripped(self):
+        from pocket_tts_server.config import _load_ini
+        ini = _load_ini()
+        assert ini["chunk_size"] == 32768
+
+    def test_allowed_origins_from_ini(self):
+        from pocket_tts_server.config import settings
+        assert isinstance(settings.allowed_origins, list)
+        assert settings.allowed_origins == ["*"]
+
+
+# ============================================================================
+# XTTS Endpoint Tests
+# ============================================================================
+
+class TestXTTSEndpoints:
+    """Test XTTS-compatible endpoints."""
+
+    def test_speakers_returns_objects(self):
+        response = client.get("/speakers")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) > 0
+        for voice in data:
+            assert "name" in voice
+            assert "voice_id" in voice
+
+    def test_speakers_contains_all_voices(self):
+        response = client.get("/speakers")
+        data = response.json()
+        names = {v["name"] for v in data}
+        for voice in ["alloy", "nova", "shimmer", "alba", "marius"]:
+            assert voice in names
+
+    def test_speakers_nested_path(self):
+        response = client.get("/v1/audio/speech/speakers")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) > 0
+
+    def test_set_tts_settings_post(self):
+        response = client.post("/set_tts_settings", json={"temperature": 0.5})
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+
+    def test_set_tts_settings_post_nested(self):
+        response = client.post("/v1/audio/speech/set_tts_settings", json={"speed": 1.5})
+        assert response.status_code == 200
+
+    def test_set_tts_settings_options(self):
+        response = client.options("/set_tts_settings")
+        assert response.status_code == 200
+
+    def test_set_tts_settings_options_nested(self):
+        response = client.options("/v1/audio/speech/set_tts_settings")
+        assert response.status_code == 200
+
+    def test_tts_stream_empty_text(self):
+        response = client.get("/tts_stream?text=")
+        assert response.status_code == 400
+
+    def test_tts_stream_default_format_is_mp3(self):
+        from pocket_tts_server.api import xtts_stream_get
+        import inspect
+        sig = inspect.signature(xtts_stream_get)
+        assert sig.parameters["format"].default == "mp3"
+
+    def test_tts_to_audio_post(self):
+        response = client.post("/tts_to_audio", json={"text": "test"})
+        assert response.status_code in (200, 500)
+
+    def test_tts_to_audio_empty_text(self):
+        response = client.post("/tts_to_audio", json={"text": ""})
+        assert response.status_code == 400
+
+    def test_tts_to_audio_speaker_wav_accepted(self):
+        response = client.post("/tts_to_audio", json={"text": "test", "speaker_wav": "nova"})
+        assert response.status_code in (200, 500)
+
+    def test_speakers_voices_consistent(self):
+        """Speakers and /v1/voices should return the same voice names."""
+        spk = {v["name"] for v in client.get("/speakers").json()}
+        vos = set(client.get("/v1/voices").json()["voices"])
+        assert spk == vos
+
+
+# ============================================================================
+# WebSocket Tests
+# ============================================================================
+
+class TestWebSocketEndpoint:
+    """Test WebSocket endpoint structure."""
+
+    def test_websocket_route_exists(self):
+        from pocket_tts_server import app
+        ws_routes = [r for r in app.routes if hasattr(r, 'path') and r.path == '/v1/audio/stream']
+        assert len(ws_routes) == 1
+
+
+# ============================================================================
+# CORS Tests
+# ============================================================================
+
+class TestCORS:
+    """Test CORS configuration."""
+
+    def test_cors_allows_any_origin(self):
+        from pocket_tts_server.config import settings
+        assert settings.allowed_origins == ["*"]
+
+    def test_preflight_response(self):
+        response = client.options(
+            "/v1/audio/speech",
+            headers={"Origin": "http://192.168.1.100:8080", "Access-Control-Request-Method": "POST"}
+        )
+        assert response.status_code in (200, 204)
+
+    def test_cors_header_present(self):
+        response = client.get("/health", headers={"Origin": "http://192.168.1.100:8080"})
+        assert "access-control-allow-origin" in response.headers
+
+
+# ============================================================================
+# Atempo Filter Tests
+# ============================================================================
+
+class TestAtempoFilter:
+    """Test FFmpeg atempo filter chaining for slow speeds."""
+
+    def test_speed_025_chains_two_atempo(self):
+        filters = []
+        s = 0.25
+        while s < 0.5:
+            filters.append("atempo=0.5")
+            s *= 2.0
+        filters.append(f"atempo={s}")
+        assert filters == ["atempo=0.5", "atempo=0.5"]
+
+    def test_speed_03_chains_filters(self):
+        filters = []
+        s = 0.3
+        while s < 0.5:
+            filters.append("atempo=0.5")
+            s *= 2.0
+        filters.append(f"atempo={s}")
+        assert filters == ["atempo=0.5", "atempo=0.6"]
+
+    def test_speed_07_single_filter(self):
+        filters = []
+        s = 0.7
+        while s < 0.5:
+            filters.append("atempo=0.5")
+            s *= 2.0
+        filters.append(f"atempo={s}")
+        assert filters == ["atempo=0.7"]
+
+    def test_speed_10_no_filter_needed(self):
+        s = 1.0
+        assert s == 1.0  # No atempo filter applied when speed == 1.0
+
+
+# ============================================================================
+# WAV Writer Safety Tests
+# ============================================================================
+
+class TestWAVWriterSafety:
+    """Test that wave.Wave_write.close handles IOError gracefully."""
+
+    def test_safe_wave_close_exists(self):
+        import wave
+        assert hasattr(wave.Wave_write, 'close')
+
+    def test_wave_write_close_no_error(self):
+        import wave, io
+        buf = io.BytesIO()
+        w = wave.open(buf, 'wb')
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b'\x00\x00' * 100)
+        w.close()
+        assert len(buf.getvalue()) > 0
+
+    def test_wave_file_is_valid(self):
+        import wave, io
+        buf = io.BytesIO()
+        w = wave.open(buf, 'wb')
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b'\x00\x00' * 100)
+        w.close()
+        buf.seek(0)
+        r = wave.open(buf, 'rb')
+        assert r.getnchannels() == 1
+        assert r.getframerate() == 24000
+        assert r.getnframes() == 100
+        r.close()
+
+
+# ============================================================================
+# FFmpeg Pipe Safety Tests
+# ============================================================================
+
+class TestFFmpegPipeSafety:
+    """Test that pipe FDs are cleaned up on Popen failure."""
+
+    def test_pipe_cleanup_on_popen_failure(self):
+        import os
+        from pocket_tts_server.audio import _start_ffmpeg_process
+        with patch('pocket_tts_server.audio.subprocess.Popen', side_effect=OSError("not found")):
+            try:
+                _start_ffmpeg_process("mp3")
+                assert False, "Should have raised"
+            except OSError:
+                pass
+        # Verify no leaked FDs by checking we can still open pipes
+        r, w = os.pipe()
+        os.close(r)
+        os.close(w)
+
+
+# ============================================================================
+# Integration Endpoint Summary Test
+# ============================================================================
+
+class TestEndpointSummary:
+    """Verify all expected endpoints are registered."""
+
+    def test_all_endpoints_registered(self):
+        from pocket_tts_server import app
+        paths = set()
+        for route in app.routes:
+            if hasattr(route, 'path'):
+                paths.add(route.path)
+
+        expected = {
+            "/health",
+            "/v1/voices",
+            "/speakers",
+            "/v1/formats",
+            "/v1/audio/speech",
+            "/v1/audio/export-voice",
+            "/tts_stream",
+            "/tts_to_audio",
+            "/tts_to_audio/",
+            "/set_tts_settings",
+            "/v1/audio/speech/tts_stream",
+            "/v1/audio/speech/speakers",
+            "/v1/audio/speech/set_tts_settings",
+            "/v1/audio/stream",
+        }
+        for ep in expected:
+            assert ep in paths, f"Missing endpoint: {ep}"

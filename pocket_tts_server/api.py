@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -264,6 +265,23 @@ async def health():
         "cache_files": len([f for f in os.listdir(settings.audio_cache_dir)
                            if f.endswith(CACHE_EXTENSIONS)]) if os.path.exists(settings.audio_cache_dir) else 0,
     }
+
+
+@app.post("/cache/clear")
+async def clear_cache():
+    """Delete all cached audio files."""
+    cache_dir = Path(settings.audio_cache_dir)
+    if not cache_dir.exists():
+        return {"status": "ok", "deleted": 0}
+    deleted = 0
+    for f in cache_dir.iterdir():
+        if f.is_file():
+            try:
+                f.unlink()
+                deleted += 1
+            except OSError:
+                pass
+    return {"status": "ok", "deleted": deleted}
 
 
 @app.websocket("/v1/audio/stream")
