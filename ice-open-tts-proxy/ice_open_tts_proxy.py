@@ -10,11 +10,11 @@ Features:
 For CLI-only (no GUI/tkinter), use: tts_proxy_cli.py
 
 Architecture:
-    [GUI / AI Agent] → Ice Open TTS Proxy (port 5000) → Pocket TTS (port 8001)
+    [GUI / AI Agent] → Ice Open TTS Proxy (port 8181) → Pocket TTS (port 8005)
 
 Usage:
     python tts_proxy.py
-    python tts_proxy.py --port 5001 --tts-url http://localhost:8001
+    python tts_proxy.py --port 5001 --tts-url http://localhost:8005
 """
 
 import os
@@ -693,7 +693,7 @@ class TTSApp:
         self.tts_url = tts_url or config.get("tts_server_url")
         
         # Prevent blocking CLI input in GUI mode: check port manually
-        desired_port = int(api_port or config.getint("api_port", 8181))
+        desired_port = int(api_port or config.getint("api_port"))
         if check_port_in_use(desired_port):
             pid = get_pid_on_port(desired_port)
             proc_name = get_process_name(pid) if pid else "Unknown"
@@ -1188,11 +1188,11 @@ def main():
     _config = Config()
     
     parser = argparse.ArgumentParser(description="TTS Speaker - GUI and API for Pocket TTS")
-    parser.add_argument("--tts-url", default=_config.get("tts_server_url", "http://localhost:8005"),
+    parser.add_argument("--tts-url", default=_config.get("tts_server_url"),
                         help="Pocket TTS server URL")
-    parser.add_argument("--port", type=int, default=_config.getint("api_port", 8181),
+    parser.add_argument("--port", type=int, default=_config.getint("api_port"),
                         help="API server port")
-    parser.add_argument("--host", default=_config.get("api_host", "127.0.0.1"),
+    parser.add_argument("--host", default=_config.get("api_host"),
                         help="API server host")
     parser.add_argument("--no-gui", action="store_true",
                         help="Run in headless mode (API server only)")

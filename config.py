@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # Server settings
     server_host: str = "0.0.0.0"
-    server_port: int = 8001
+    server_port: int = 8005
     
     # Path settings
     voices_dir: str = "voices"
@@ -59,7 +59,8 @@ class Settings(BaseSettings):
     model_tier: str = "tts-1"
     
     # Security settings
-    allowed_origins: List[str] = ["http://localhost:*", "http://127.0.0.1:*"]
+    allowed_origins: List[str] = ["http://localhost", "http://127.0.0.1"]
+    allowed_origin_regex: str = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     rate_limit_requests: int = 120  # requests per minute (increased for Live Mode)
     rate_limit_window: int = 60  # seconds
     enable_high_priority: bool = True  # Windows high priority (can disable for shared systems)

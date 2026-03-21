@@ -13,8 +13,8 @@ Usage:
     python tts_proxy_client.py --status
 
 This client works with:
-- TTS Proxy (port 5000) - for playback via proxy
-- Pocket TTS Server (port 8001) - direct generation
+- TTS Proxy (port 8181) - for playback via proxy
+- Pocket TTS Server (port 8005) - direct generation
 """
 
 import sys
@@ -34,9 +34,9 @@ except ImportError:
 from tts_backend import Config
 _config = Config()
 
-# Default URLs
-TTS_SERVER_URL = os.environ.get("TTS_SERVER_URL", _config.get("tts_server_url", "http://localhost:8001"))
-GUI_APP_URL = os.environ.get("GUI_APP_URL", f"http://{_config.get('api_host', '127.0.0.1')}:{_config.get('api_port', '8181')}")
+# Read from config.ini (created by Config with defaults if missing)
+TTS_SERVER_URL = os.environ.get("TTS_SERVER_URL", _config.get("tts_server_url"))
+GUI_APP_URL = os.environ.get("GUI_APP_URL", f"http://{_config.get('api_host')}:{_config.get('api_port')}")
 
 
 def check_tts_server(url: str) -> bool:
@@ -175,9 +175,9 @@ Examples:
     input_group.add_argument("--speak", help="Send text to GUI app for playback")
     
     # Options
-    parser.add_argument("--voice", default="nova", help="Voice to use (default: nova)")
-    parser.add_argument("--speed", type=float, default=1.0, help="Speech speed (0.25-4.0)")
-    parser.add_argument("--format", default="wav", choices=["wav", "mp3", "opus", "flac"],
+    parser.add_argument("--voice", default=_config.get("default_voice", "nova"), help="Voice to use (default: nova)")
+    parser.add_argument("--speed", type=float, default=_config.getfloat("speed", 1.0), help="Speech speed (0.25-4.0)")
+    parser.add_argument("--format", default=_config.get("format", "wav"), choices=["wav", "mp3", "opus", "flac"],
                         help="Audio format (default: wav)")
     parser.add_argument("--save", help="Save output to file")
     parser.add_argument("--play", action="store_true", help="Show temp file path for playback")

@@ -126,9 +126,9 @@ def handle_port_conflict(port: int, script_name: str = "server") -> int:
 from tts_backend import Config
 _config = Config()
 
-# Defaults
-TTS_SERVER = os.environ.get("TTS_SERVER", _config.get("tts_server_url", "http://localhost:8001"))
-PROXY_SERVER = os.environ.get("PROXY_SERVER", f"http://{_config.get('api_host', '127.0.0.1')}:{_config.get('api_port', '8181')}")
+# Read from config.ini (created by Config with defaults if missing)
+TTS_SERVER = os.environ.get("TTS_SERVER", _config.get("tts_server_url"))
+PROXY_SERVER = os.environ.get("PROXY_SERVER", f"http://{_config.get('api_host')}:{_config.get('api_port')}")
 
 
 def check_status(tts_url: str, proxy_url: str = None) -> bool:
@@ -390,7 +390,7 @@ Examples:
   %(prog)s --speak "Task complete" --voice Carlotta
   %(prog)s --status
   %(prog)s --voices
-  %(prog)s --server --port 5000
+  %(prog)s --server --port 8181
         """
     )
     
@@ -401,9 +401,9 @@ Examples:
     group.add_argument("--file", help="Read text from file")
     
     # Options
-    parser.add_argument("--voice", default="nova", help="Voice name (default: nova)")
-    parser.add_argument("--speed", type=float, default=1.0, help="Speed (0.25-4.0)")
-    parser.add_argument("--format", default="mp3", choices=["wav", "mp3", "opus", "flac"])
+    parser.add_argument("--voice", default=_config.get("default_voice", "nova"), help="Voice name (default: nova)")
+    parser.add_argument("--speed", type=float, default=_config.getfloat("speed", 1.0), help="Speed (0.25-4.0)")
+    parser.add_argument("--format", default=_config.get("format", "mp3"), choices=["wav", "mp3", "opus", "flac"])
     parser.add_argument("--save", help="Output file path")
     
     # Commands
@@ -415,7 +415,7 @@ Examples:
     parser.add_argument("--tts-url", default=TTS_SERVER, help="TTS server URL")
     parser.add_argument("--proxy-url", default=PROXY_SERVER, help="Proxy server URL")
     parser.add_argument("--host", default=_config.get("api_host", "127.0.0.1"), help="Server host")
-    parser.add_argument("--port", type=int, default=_config.getint("api_port", 5000), help="Server port")
+    parser.add_argument("--port", type=int, default=_config.getint("api_port", 8181), help="Server port")
     parser.add_argument("--feed", action="store_true", help="Show request feed in real-time (server mode only)")
     
     # Logging

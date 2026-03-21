@@ -759,13 +759,11 @@ def _start_audio_producer(
                 if "cuda" in model_tier and torch.cuda.is_available():
                     if current_device != "cuda":
                         logger.debug(f"Moving model to CUDA for generation")
-                        tts_model.to("cuda")
-                        model_manager._device = "cuda"
+                        model_manager.move_to_device("cuda")
                 else:
                     if current_device != "cpu":
                         logger.debug(f"Moving model back to CPU")
-                        tts_model.to("cpu")
-                        model_manager._device = "cpu"
+                        model_manager.move_to_device("cpu")
                 
                 is_safe_file = os.path.isabs(voice_name)
                 if os.path.exists(voice_name) and os.path.isfile(voice_name) and is_safe_file:
@@ -833,7 +831,13 @@ def _start_audio_producer(
 async def _stream_queue_chunks(queue: Queue) -> AsyncIterator[bytes]:
     """Async generator that yields bytes from queue until EOF."""
     while True:
-        chunk = await asyncio.to_thread(queue.get)
+        try:
+            chunk = await asyncio.to_thread(queue.get, timeout=5.0)
+        except Exception:
+            # Timeout or other error; check if queue was aborted
+            if getattr(queue, "abort", False):
+                break
+            continue
         if chunk is None:
             logger.debug("Received EOF from producer")
             break
@@ -855,7 +859,14 @@ def _start_ffmpeg_process(format: str, speed: float = 1.0) -> Tuple[subprocess.P
     ]
     
     if speed != 1.0:
-        cmd.extend(["-filter:a", f"atempo={speed}"])
+        # FFmpeg atempo filter only accepts [0.5, 100.0]. Chain filters for slower speeds.
+        filters = []
+        s = speed
+        while s < 0.5:
+            filters.append("atempo=0.5")
+            s *= 2.0
+        filters.append(f"atempo={s}")
+        cmd.extend(["-filter:a", ",".join(filters)])
     
     if codec == "opus":
         cmd.extend(["-strict", "-2"])
@@ -976,9 +987,8 @@ async def _generate_audio_core(
                     await asyncio.to_thread(writer_thread.join)
             return
         
-        async for chunk in _stream_queue_chunks(queue):
-            yield chunk
-        producer_thread.join(timeout=30)
+        # All valid formats handled above; unreachable with validated SpeechRequest
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
 
     except Exception as e:
         logger.exception(f"Error streaming audio format {format}: {e}")
@@ -1173,6 +1183,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
+    allow_origin_regex=settings.allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],

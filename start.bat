@@ -9,7 +9,7 @@ rem set HF_HOME=%~dp0cache
 rem if not exist "%HF_HOME%" mkdir "%HF_HOME%"
 
 echo Starting Pocket TTS API...
-echo Please check the log below for the actual PORT (e.g. 8001).
+echo Please check the log below for the actual PORT (e.g. 8005).
 python pocketapi.py
 if %ERRORLEVEL% NEQ 0 (
     echo.

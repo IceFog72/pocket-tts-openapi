@@ -321,6 +321,3 @@ def setup_logging(log_level=logging.INFO) -> Path:
     root_logger.addHandler(console_handler)
     
     return log_file
-
-# Prevent duplicate logging if module is imported multiple times
-logging.getLogger("tts_proxy").handlers = []
