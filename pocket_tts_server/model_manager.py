@@ -85,7 +85,7 @@ class ModelManager:
 
                 if not hasattr(TTSModel, "_slice_kv_cache"):
                     logger.info("Patching TTSModel with missing _slice_kv_cache method")
-                    TTSModel._slice_kv_cache = _slice_kv_cache
+                    setattr(TTSModel, "_slice_kv_cache", _slice_kv_cache)
 
                 self._device = self._model.device
                 self._sample_rate = getattr(self._model, "sample_rate", settings.default_sample_rate)

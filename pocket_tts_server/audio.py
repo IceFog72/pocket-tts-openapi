@@ -261,8 +261,8 @@ async def _generate_audio_core(
     if needs_ffmpeg and not _ffmpeg_available:
         raise HTTPException(status_code=400, detail=f"FFmpeg required for format '{format}' or speed adjustment, but FFmpeg is not installed")
 
-    queue = Queue(maxsize=settings.queue_size)
-    queue.abort = False
+    queue: Queue[Optional[bytes]] = Queue(maxsize=settings.queue_size)
+    queue.abort = False  # type: ignore[attr-defined]
     producer_thread = _start_audio_producer(
         queue, voice_name, text, temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier
     )
@@ -278,12 +278,13 @@ async def _generate_audio_core(
             return
 
         if format in FFMPEG_FORMATS or (format in ("wav", "pcm") and speed != 1.0):
-            proc, write_fd, _ = _start_ffmpeg_process(format, speed)
+            ffmpeg_proc, write_fd, _ = _start_ffmpeg_process(format, speed)
+            proc = ffmpeg_proc
             writer_thread = _start_pipe_writer(queue, write_fd)
 
             try:
                 while True:
-                    chunk = await asyncio.to_thread(proc.stdout.read, chunk_size)
+                    chunk = await asyncio.to_thread(proc.stdout.read, chunk_size)  # type: ignore[union-attr]
                     if not chunk:
                         break
                     yield chunk
@@ -300,12 +301,13 @@ async def _generate_audio_core(
                     logger.warning(f"Error cleaning up FFmpeg process: {e}")
                 finally:
                     try:
-                        proc.stdout.close()
+                        if proc.stdout:
+                            proc.stdout.close()  # type: ignore[union-attr]
                     except Exception:
                         pass
                     if proc.stderr:
                         try:
-                            proc.stderr.close()
+                            proc.stderr.close()  # type: ignore[union-attr]
                         except Exception:
                             pass
 
@@ -320,7 +322,7 @@ async def _generate_audio_core(
         logger.exception(f"Error streaming audio format {format}: {e}")
         raise
     finally:
-        queue.abort = True
+        queue.abort = True  # type: ignore[attr-defined]
         while not queue.empty():
             try:
                 queue.get_nowait()

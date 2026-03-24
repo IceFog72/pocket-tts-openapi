@@ -90,14 +90,32 @@ asyncio.run(stream_tts())
 
 ## SillyTavern Integration
 
-The server works with two SillyTavern providers:
+The server works with SillyTavern in three ways:
 
-| Provider | Set endpoint to | Voices auto-discovered |
-|----------|----------------|----------------------|
-| **XTTSv2** | `http://host:8005` | Yes |
-| **Pocket TTS** | `http://host:8005` | Yes |
+### 1. PocketTTS WebSocket Extension (Recommended)
 
-Just select the provider, set the URL, and the voices appear automatically.
+The **[SillyTavern-PocketTTS-WebSocket](https://github.com/IceFog72/SillyTavern-PocketTTS-WebSocket)** extension provides the best experience:
+
+- Persistent WebSocket connection — no reconnect overhead per sentence
+- Sentence-split generation — each sentence gets exact audio duration, no gaps
+- Built-in TTS playback bar with seek, volume, speed controls
+- Model selection (CPU/GPU, fast/quality)
+- Voice auto-discovery
+- Streaming Response via async generator — audio plays while server generates
+
+### 2. Built-in XTTSv2 Provider
+
+Use SillyTavern's built-in XTTSv2 provider — set endpoint to `http://host:8005`.
+
+### 3. Built-in OpenAI Compatible Provider
+
+Use SillyTavern's built-in OpenAI Compatible provider — set endpoint to `http://host:8005/v1/audio/speech`.
+
+| Provider | Set endpoint to | Voices auto-discovered | Sentence streaming |
+|----------|----------------|----------------------|-------------------|
+| **PocketTTS Extension** | `http://host:8005` | Yes | Yes |
+| **XTTSv2** | `http://host:8005` | Yes | No |
+| **OpenAI Compatible** | `http://host:8005/v1/audio/speech` | Yes | No |
 
 ---
 

@@ -3,6 +3,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -291,7 +293,7 @@ async def websocket_tts(websocket: WebSocket):
     Protocol:
       Client → Server: {"text": "Hello world", "voice": "nova", "format": "wav", "speed": 1.0}
       Server → Client: binary audio chunks
-      Server → Client: {"status": "done"}  (when generation complete)
+      Server → Client: {"status": "done", "audio_duration": 2.1, "gen_time": 1.05}
 
     Can be called multiple times per connection for sequential generations.
     """
@@ -301,6 +303,9 @@ async def websocket_tts(websocket: WebSocket):
         await websocket.send_json({"error": "TTS model not loaded", "status": "error"})
         await websocket.close(code=1011)
         return
+
+    # Bytes per second estimates for duration calculation
+    _bps = {"wav": 48000, "mp3": 16000, "opus": 8000, "aac": 16000, "flac": 32000, "pcm": 48000}
 
     try:
         while True:
@@ -321,14 +326,38 @@ async def websocket_tts(websocket: WebSocket):
                 continue
 
             try:
+                t0 = time.time()
+                total_bytes = 0
+
                 async for chunk in generate_audio(
                     text=text, voice=voice, speed=speed, format=fmt,
                     temperature=temperature, top_p=top_p,
                     repetition_penalty=repetition_penalty,
                     lsd_decode_steps=lsd_decode_steps, model_tier=model_tier,
                 ):
+                    total_bytes += len(chunk)
                     await websocket.send_bytes(chunk)
-                await websocket.send_json({"status": "done"})
+
+                gen_time = time.time() - t0
+                bps = _bps.get(fmt, 16000) / max(speed, 0.5)
+                audio_duration = total_bytes / bps
+
+                # Text stats
+                sentences = [s.strip() for s in re.split(r'[.!?…]+', text) if s.strip()]
+                words = text.split()
+
+                await websocket.send_json({
+                    "status": "done",
+                    "audio_duration": round(audio_duration, 3),
+                    "gen_time": round(gen_time, 3),
+                })
+
+                logger.info(
+                    "WS: %d sentences, %d words, %d chars | %.1fs audio in %.1fs (%.2fx) | voice=%s",
+                    len(sentences), len(words), len(text),
+                    audio_duration, gen_time, audio_duration / max(gen_time, 0.01),
+                    voice,
+                )
             except Exception as e:
                 logger.exception(f"WebSocket generation error")
                 await websocket.send_json({"error": str(e), "status": "error"})
@@ -337,6 +366,112 @@ async def websocket_tts(websocket: WebSocket):
         logger.debug("WebSocket client disconnected")
     except Exception as e:
         logger.warning(f"WebSocket error: {e}")
+
+
+@app.websocket("/v1/realtime")
+async def websocket_realtime_tts(websocket: WebSocket):
+    """Real-time TTS streaming — OpenAI Realtime API style.
+
+    Protocol (matches OpenAI Realtime API):
+      Client → Server: {"type":"session.update","session":{"voice":"nova","format":"mp3","speed":1.0}}
+      Client → Server: {"type":"input_text.append","text":"Hello world"}
+      Client → Server: {"type":"input_text.append","text":" how are you"}
+      Client → Server: {"type":"input_text.done"}
+      Server → Client: binary audio chunk
+      Server → Client: {"type":"response.audio.done"}
+      Server → Client: binary audio chunk
+      Server → Client: {"type":"response.audio.done"}
+      ...
+      Server → Client: {"type":"response.done"}
+    """
+    await websocket.accept()
+
+    if not model_manager.is_loaded:
+        await websocket.send_json({"type": "error", "error": {"message": "TTS model not loaded"}})
+        await websocket.close(code=1011)
+        return
+
+    try:
+        # Session config
+        data = await websocket.receive_json()
+        session = data.get("session", {}) if data.get("type") == "session.update" else data
+        voice = session.get("voice", "nova")
+        fmt = session.get("format") or session.get("response_format", "mp3")
+        speed = float(session.get("speed", 1.0))
+        temperature = float(session.get("temperature", settings.temperature))
+        top_p = float(session.get("top_p", settings.top_p))
+        repetition_penalty = float(session.get("repetition_penalty", settings.repetition_penalty))
+        lsd_decode_steps = int(session.get("lsd_decode_steps", settings.lsd_decode_steps))
+        model_tier = session.get("model", settings.model_tier)
+
+        buffer = ""
+
+        async def process_sentence(sentence: str):
+            sentence = sentence.strip()
+            if not sentence:
+                return
+            logger.info(f"[Realtime] Generating: '{sentence[:60]}...'")
+            try:
+                async for chunk in generate_audio(
+                    text=sentence, voice=voice, speed=speed, format=fmt,
+                    temperature=temperature, top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    lsd_decode_steps=lsd_decode_steps, model_tier=model_tier,
+                ):
+                    await websocket.send_bytes(chunk)
+                await websocket.send_json({"type": "response.audio.done"})
+            except (RuntimeError, Exception) as e:
+                if "websocket" in str(e).lower() or "closed" in str(e).lower():
+                    raise
+                logger.warning(f"[Realtime] Generation error: {e}")
+
+        async def drain_buffer():
+            nonlocal buffer
+            while True:
+                match = re.search(r'([^.!?]*[.!?])\s*', buffer)
+                if not match:
+                    break
+                sentence = match.group(1).strip()
+                buffer = buffer[match.end():]
+                if sentence:
+                    await process_sentence(sentence)
+
+        # Receive text incrementally
+        while True:
+            try:
+                data = await websocket.receive_json()
+            except Exception:
+                break
+
+            msg_type = data.get("type", "")
+
+            if msg_type == "input_text.append":
+                text = data.get("text", "")
+                if text:
+                    buffer += text
+                    await drain_buffer()
+            elif msg_type == "input_text.done":
+                break
+            elif msg_type == "session.update":
+                session = data.get("session", {})
+                voice = session.get("voice", voice)
+                fmt = session.get("format", fmt)
+                speed = float(session.get("speed", speed))
+
+        # Flush remaining buffer
+        if buffer.strip():
+            await process_sentence(buffer.strip())
+
+        await websocket.send_json({"type": "response.done"})
+
+    except WebSocketDisconnect:
+        logger.debug("[Realtime] Client disconnected")
+    except Exception as e:
+        logger.warning(f"[Realtime] Error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "error": {"message": str(e)}})
+        except Exception:
+            pass
 
 
 # ============================================================================
@@ -408,7 +543,7 @@ async def xtts_speakers_nested():
 # ============================================================================
 
 def main():
-    log_config = uvicorn.config.LOGGING_CONFIG
+    from uvicorn.config import LOGGING_CONFIG as log_config
     log_config["formatters"]["default"]["fmt"] = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     log_config["formatters"]["access"]["fmt"] = '%(asctime)s - %(client_addr)s - "%(request_line)s" %(status_code)s'
 

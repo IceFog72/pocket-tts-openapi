@@ -32,3 +32,4 @@ build/
 *.swo
 *~
 GEMINI.md
+test_browser.html

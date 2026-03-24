@@ -1,6 +1,6 @@
 """Pydantic models for API requests and responses."""
 import logging
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -14,7 +14,7 @@ class SpeechRequest(BaseModel):
     input: str = Field(..., min_length=1, max_length=4096, description="Text to generate")
     voice: str = Field("alloy", description="Voice identifier (predefined or custom)")
     response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field("wav")
-    speed: Optional[float] = Field(1.0, ge=0.25, le=4.0)
+    speed: float = Field(1.0, ge=0.25, le=4.0)
     temperature: float = Field(default_factory=lambda: settings.temperature, ge=0.0, le=2.0)
     top_p: float = Field(default_factory=lambda: settings.top_p, ge=0.1, le=1.0, description="Nucleus sampling")
     repetition_penalty: float = Field(default_factory=lambda: settings.repetition_penalty, ge=1.0, le=2.0)
