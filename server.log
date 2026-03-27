@@ -1,17 +1,480 @@
-INFO:__main__:Starting server with HTTP debug logging enabled
-INFO:__main__:Server binding to: http://0.0.0.0:8001
-INFO:__main__:If you are using SillyTavern, set provider endpoint to: http://127.0.0.1:8001/v1/audio/speech
-2026-03-20 13:32:33,333 - uvicorn.error - INFO - Started server process [295695]
-2026-03-20 13:32:33,333 - uvicorn.error - INFO - Waiting for application startup.
-INFO:__main__:Starting TTS API server...
-INFO:__main__:Loading TTS model (timeout: 300s)...
-INFO:httpx:HTTP Request: HEAD https://huggingface.co/kyutai/pocket-tts/resolve/427e3d61b276ed69fdd03de0d185fa8a8d97fc5b/tts_b6369a24.safetensors "HTTP/1.1 401 Unauthorized"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 02:14:06,178 - 127.0.0.1:42000 - "GET /health HTTP/1.1" 200 OK
+2026-03-27 02:14:17,283 - uvicorn.error - INFO - 127.0.0.1:32980 - "WebSocket /v1/audio/stream" [accepted]
+2026-03-27 02:14:17,284 - uvicorn.error - INFO - connection open
+INFO:pocket_tts_server.api:WS legacy #1: 180 chars, voice=Carlotta, format=mp3, text='The fluorescent tubes above flicker once, a brief tremThe fluorescent tubes abov...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 267 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremThe fluorescent tubes abov...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremThe fluorescent tubes abov...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremThe fluorescent tubes abov...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 37 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 10640 ms of audio in 5315 ms so 2.00x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremThe fluorescent tubes abov...'
+INFO:pocket_tts_server.api:WS legacy chunk #5: 27661 bytes, text='The fluorescent tubes above flicker once, a brief tremThe fluorescent tubes abov...'
+INFO:pocket_tts_server.api:WS legacy done: 180 chars | 9.9s audio in 5.8s (1.70x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #2: 133 chars, voice=Carlotta, format=mp3, text='A low, persistent hum vibrates through the metal bench, seeping into the soles o...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 236 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='A low, persistent hum vibrates through the metal bench, seeping into the soles o...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='A low, persistent hum vibrates through the metal bench, seeping into the soles o...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='A low, persistent hum vibrates through the metal bench, seeping into the soles o...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 39 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 8480 ms of audio in 4534 ms so 1.87x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #4: 29476 bytes, text='A low, persistent hum vibrates through the metal bench, seeping into the soles o...'
+INFO:pocket_tts_server.api:WS legacy done: 133 chars | 8.0s audio in 5.1s (1.58x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #3: 127 chars, voice=Carlotta, format=mp3, text='The air, still devoid of scent, brushes past his exposed forearms, carrying a fa...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 221 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The air, still devoid of scent, brushes past his exposed forearms, carrying a fa...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The air, still devoid of scent, brushes past his exposed forearms, carrying a fa...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 37 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 7920 ms of audio in 4003 ms so 1.98x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The air, still devoid of scent, brushes past his exposed forearms, carrying a fa...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 21208 bytes, text='The air, still devoid of scent, brushes past his exposed forearms, carrying a fa...'
+INFO:pocket_tts_server.api:WS legacy done: 127 chars | 7.5s audio in 4.5s (1.67x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #4: 25 chars, voice=Carlotta, format=mp3, text='From somewhere beyond the...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 104 ms
+INFO:pocket_tts.models.tts_model:Average generation step time: 40 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 2000 ms of audio in 1168 ms so 1.71x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #1: 29872 bytes, text='From somewhere beyond the...'
+INFO:pocket_tts_server.api:WS legacy done: 25 chars | 1.9s audio in 1.7s (1.11x) | voice=Carlotta
+2026-03-27 02:20:13,403 - uvicorn.error - INFO - Shutting down
+2026-03-27 02:20:13,403 - uvicorn.error - INFO - connection closed
+2026-03-27 02:20:13,504 - uvicorn.error - INFO - Waiting for application shutdown.
+INFO:pocket_tts_server.api:Shutting down TTS server...
+INFO:pocket_tts_server.model_manager:Unloading TTS model...
+INFO:pocket_tts_server.api:TTS server shutdown complete
+2026-03-27 02:20:13,553 - uvicorn.error - INFO - Application shutdown complete.
+2026-03-27 02:20:13,553 - uvicorn.error - INFO - Finished server process [56664]
+INFO:pocket_tts_server.api:Server binding to: http://0.0.0.0:8005
+2026-03-27 02:20:18,823 - uvicorn.error - INFO - Started server process [68943]
+2026-03-27 02:20:18,824 - uvicorn.error - INFO - Waiting for application startup.
+INFO:pocket_tts_server.api:Starting TTS API server...
+INFO:pocket_tts_server.api:FFmpeg: Available
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+INFO:pocket_tts_server.api:HuggingFace: Already authenticated
+INFO:pocket_tts_server.model_manager:Loading TTS model (timeout: 300s)...
+INFO:pocket_tts.conditioners.text:Loading sentencepiece tokenizer from hf://kyutai/pocket-tts-without-voice-cloning/tokenizer.model@d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3
+INFO:pocket_tts.models.tts_model:Loading TTSModel weights from hf://kyutai/pocket-tts/tts_b6369a24.safetensors@427e3d61b276ed69fdd03de0d185fa8a8d97fc5b
 INFO:root:TTS Model loaded successfully. Its size is 471.0 MB
-INFO:__main__:Patching TTSModel with missing _slice_kv_cache method
-INFO:__main__:Pocket TTS loaded | Device: cpu | Sample Rate: 24000
-INFO:__main__:[96m[1mDefault voices available:[0m
-INFO:__main__:[96m   OpenAI aliases: alloy, echo, fable, onyx, nova, shimmer[0m
-INFO:__main__:[96m   Pocket TTS: alba, marius, javert, jean, fantine, cosette, eponine, azelma[0m
-INFO:__main__:[93mNo custom voices found in 'voices/' directory.[0m
-2026-03-20 13:32:34,337 - uvicorn.error - INFO - Application startup complete.
-2026-03-20 13:32:34,338 - uvicorn.error - INFO - Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:pocket_tts_server.model_manager:Patching TTSModel with missing _slice_kv_cache method
+INFO:pocket_tts_server.model_manager:Pocket TTS loaded | Device: cpu | Sample Rate: 24000
+INFO:pocket_tts_server.voices:[96m[1mDefault voices available:[0m
+INFO:pocket_tts_server.voices:[96m   OpenAI aliases: alloy, echo, fable, onyx, nova, shimmer[0m
+INFO:pocket_tts_server.voices:[96m   Pocket TTS: alba, marius, javert, jean, fantine, cosette, eponine, azelma[0m
+INFO:pocket_tts_server.voices:[92m[1mCustom voices loaded: [0m[92mAemeath, Carlotta[0m
+INFO:pocket_tts_server.api:Voice cloning: ENABLED
+2026-03-27 02:20:20,010 - uvicorn.error - INFO - Application startup complete.
+2026-03-27 02:20:20,010 - uvicorn.error - INFO - Uvicorn running on http://0.0.0.0:8005 (Press CTRL+C to quit)
+2026-03-27 02:20:23,176 - uvicorn.error - INFO - 127.0.0.1:60020 - "WebSocket /v1/audio/stream" [accepted]
+2026-03-27 02:20:23,177 - uvicorn.error - INFO - connection open
+INFO:pocket_tts_server.api:WS legacy #1: 17 chars, voice=Carlotta, format=mp3, text='Hello world test....'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 79 ms
+INFO:pocket_tts.models.tts_model:Average generation step time: 37 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 1520 ms of audio in 848 ms so 1.79x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #1: 23146 bytes, text='Hello world test....'
+INFO:pocket_tts_server.api:WS legacy done: 17 chars | 1.4s audio in 1.4s (1.04x) | voice=Carlotta
+2026-03-27 02:20:24,568 - uvicorn.error - INFO - connection closed
+2026-03-27 02:34:58,157 - uvicorn.error - INFO - Shutting down
+2026-03-27 02:34:58,258 - uvicorn.error - INFO - Waiting for application shutdown.
+INFO:pocket_tts_server.api:Shutting down TTS server...
+INFO:pocket_tts_server.model_manager:Unloading TTS model...
+INFO:pocket_tts_server.api:TTS server shutdown complete
+2026-03-27 02:34:58,330 - uvicorn.error - INFO - Application shutdown complete.
+2026-03-27 02:34:58,330 - uvicorn.error - INFO - Finished server process [68943]
+INFO:pocket_tts_server.api:Server binding to: http://0.0.0.0:8005
+2026-03-27 02:35:02,892 - uvicorn.error - INFO - Started server process [70219]
+2026-03-27 02:35:02,892 - uvicorn.error - INFO - Waiting for application startup.
+INFO:pocket_tts_server.api:Starting TTS API server...
+INFO:pocket_tts_server.api:FFmpeg: Available
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+INFO:pocket_tts_server.api:HuggingFace: Already authenticated
+INFO:pocket_tts_server.model_manager:Loading TTS model (timeout: 300s)...
+INFO:pocket_tts.conditioners.text:Loading sentencepiece tokenizer from hf://kyutai/pocket-tts-without-voice-cloning/tokenizer.model@d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3
+INFO:pocket_tts.models.tts_model:Loading TTSModel weights from hf://kyutai/pocket-tts/tts_b6369a24.safetensors@427e3d61b276ed69fdd03de0d185fa8a8d97fc5b
+INFO:root:TTS Model loaded successfully. Its size is 471.0 MB
+INFO:pocket_tts_server.model_manager:Patching TTSModel with missing _slice_kv_cache method
+INFO:pocket_tts_server.model_manager:Pocket TTS loaded | Device: cpu | Sample Rate: 24000
+INFO:pocket_tts_server.voices:[96m[1mDefault voices available:[0m
+INFO:pocket_tts_server.voices:[96m   OpenAI aliases: alloy, echo, fable, onyx, nova, shimmer[0m
+INFO:pocket_tts_server.voices:[96m   Pocket TTS: alba, marius, javert, jean, fantine, cosette, eponine, azelma[0m
+INFO:pocket_tts_server.voices:[92m[1mCustom voices loaded: [0m[92mAemeath, Carlotta[0m
+INFO:pocket_tts_server.api:Voice cloning: ENABLED
+2026-03-27 02:35:04,161 - uvicorn.error - INFO - Application startup complete.
+2026-03-27 02:35:04,162 - uvicorn.error - INFO - Uvicorn running on http://0.0.0.0:8005 (Press CTRL+C to quit)
+2026-03-27 02:35:15,295 - uvicorn.error - INFO - 127.0.0.1:41324 - "WebSocket /v1/audio/stream" [accepted]
+2026-03-27 02:35:15,296 - uvicorn.error - INFO - connection open
+INFO:pocket_tts_server.api:WS legacy #1: 182 chars, voice=Carlotta, format=mp3, text='The fluorescent tubes above flicker once, a brief tremor of light that casts a t...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 243 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremor of light that casts a t...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremor of light that casts a t...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 44 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 7680 ms of audio in 4676 ms so 1.64x faster than real-time
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 158 ms
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremor of light that casts a t...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremor of light that casts a t...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 42 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 3600 ms of audio in 2126 ms so 1.69x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #5: 32768 bytes, text='The fluorescent tubes above flicker once, a brief tremor of light that casts a t...'
+INFO:pocket_tts_server.api:WS legacy chunk #6: 2923 bytes, text='The fluorescent tubes above flicker once, a brief tremor of light that casts a t...'
+INFO:pocket_tts_server.api:WS legacy done: 182 chars | 10.4s audio in 7.4s (1.41x) | voice=Carlotta
+2026-03-27 02:35:22,672 - uvicorn.error - INFO - connection closed
+[LEGACY] The fluorescent tubes above flicker once, a brief tremor of light that casts a t
+[CHUNK] 1 The fluorescent tubes above flicker once, a brief tremor of light that casts a t
+[CHUNK] 2 The fluorescent tubes above flicker once, a brief tremor of light that casts a t
+[CHUNK] 3 The fluorescent tubes above flicker once, a brief tremor of light that casts a t
+[CHUNK] 4 The fluorescent tubes above flicker once, a brief tremor of light that casts a t
+[CHUNK] 5 The fluorescent tubes above flicker once, a brief tremor of light that casts a t
+[CHUNK] 6 The fluorescent tubes above flicker once, a brief tremor of light that casts a t
+2026-03-27 02:38:37,729 - 127.0.0.1:51294 - "GET /v1/voices HTTP/1.1" 200 OK
+2026-03-27 02:38:37,732 - 127.0.0.1:51294 - "GET /v1/voices HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 02:38:38,097 - 127.0.0.1:51294 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 02:38:38,275 - 127.0.0.1:51294 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 02:38:39,096 - 127.0.0.1:51294 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 02:38:46,430 - 127.0.0.1:36612 - "GET /health HTTP/1.1" 200 OK
+2026-03-27 02:39:00,233 - uvicorn.error - INFO - 127.0.0.1:56752 - "WebSocket /v1/audio/stream" [accepted]
+2026-03-27 02:39:00,233 - uvicorn.error - INFO - connection open
+INFO:pocket_tts_server.api:WS legacy #1: 96 chars, voice=Carlotta, format=mp3, text='The bench, once bearing weight, now lies empty, its cold steel slats exposed to ...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 175 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The bench, once bearing weight, now lies empty, its cold steel slats exposed to ...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The bench, once bearing weight, now lies empty, its cold steel slats exposed to ...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 35 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 7360 ms of audio in 3483 ms so 2.11x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The bench, once bearing weight, now lies empty, its cold steel slats exposed to ...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 9919 bytes, text='The bench, once bearing weight, now lies empty, its cold steel slats exposed to ...'
+INFO:pocket_tts_server.api:WS legacy done: 96 chars | 6.8s audio in 4.0s (1.70x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #2: 213 chars, voice=Carlotta, format=mp3, text='A faint shiver travels through the metal as the lingering chill of the undergrou...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 268 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='A faint shiver travels through the metal as the lingering chill of the undergrou...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='A faint shiver travels through the metal as the lingering chill of the undergrou...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='A faint shiver travels through the metal as the lingering chill of the undergrou...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 36 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 10880 ms of audio in 5391 ms so 2.02x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='A faint shiver travels through the metal as the lingering chill of the undergrou...'
+INFO:pocket_tts_server.api:WS legacy chunk #5: 32768 bytes, text='A faint shiver travels through the metal as the lingering chill of the undergrou...'
+INFO:pocket_tts_server.api:WS legacy chunk #6: 418 bytes, text='A faint shiver travels through the metal as the lingering chill of the undergrou...'
+INFO:pocket_tts_server.api:WS legacy done: 213 chars | 10.3s audio in 5.9s (1.73x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #3: 252 chars, voice=Carlotta, format=mp3, text='Beyond the bench, the platform stretches into a silent expanse; the departure bo...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 346 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='Beyond the bench, the platform stretches into a silent expanse; the departure bo...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='Beyond the bench, the platform stretches into a silent expanse; the departure bo...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='Beyond the bench, the platform stretches into a silent expanse; the departure bo...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='Beyond the bench, the platform stretches into a silent expanse; the departure bo...'
+INFO:pocket_tts_server.api:WS legacy chunk #5: 32768 bytes, text='Beyond the bench, the platform stretches into a silent expanse; the departure bo...'
+INFO:pocket_tts_server.api:WS legacy chunk #6: 32768 bytes, text='Beyond the bench, the platform stretches into a silent expanse; the departure bo...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 36 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 14640 ms of audio in 7188 ms so 2.04x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #7: 23582 bytes, text='Beyond the bench, the platform stretches into a silent expanse; the departure bo...'
+INFO:pocket_tts_server.api:WS legacy done: 252 chars | 13.8s audio in 7.6s (1.80x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #4: 22 chars, voice=Carlotta, format=mp3, text='The warning sign hangs...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 87 ms
+INFO:pocket_tts.models.tts_model:Average generation step time: 34 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 2640 ms of audio in 1282 ms so 2.06x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The warning sign hangs...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 307 bytes, text='The warning sign hangs...'
+INFO:pocket_tts_server.api:WS legacy done: 22 chars | 2.1s audio in 1.8s (1.17x) | voice=Carlotta
+2026-03-27 02:44:34,866 - uvicorn.error - INFO - connection closed
+2026-03-27 02:44:34,882 - uvicorn.error - INFO - Shutting down
+2026-03-27 02:44:34,982 - uvicorn.error - INFO - Waiting for application shutdown.
+INFO:pocket_tts_server.api:Shutting down TTS server...
+INFO:pocket_tts_server.model_manager:Unloading TTS model...
+INFO:pocket_tts_server.api:TTS server shutdown complete
+2026-03-27 02:44:35,032 - uvicorn.error - INFO - Application shutdown complete.
+2026-03-27 02:44:35,033 - uvicorn.error - INFO - Finished server process [70219]
+INFO:pocket_tts_server.api:Server binding to: http://0.0.0.0:8005
+2026-03-27 02:44:39,602 - uvicorn.error - INFO - Started server process [72099]
+2026-03-27 02:44:39,602 - uvicorn.error - INFO - Waiting for application startup.
+INFO:pocket_tts_server.api:Starting TTS API server...
+INFO:pocket_tts_server.api:FFmpeg: Available
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+INFO:pocket_tts_server.api:HuggingFace: Already authenticated
+INFO:pocket_tts_server.model_manager:Loading TTS model (timeout: 300s)...
+INFO:pocket_tts.conditioners.text:Loading sentencepiece tokenizer from hf://kyutai/pocket-tts-without-voice-cloning/tokenizer.model@d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3
+INFO:pocket_tts.models.tts_model:Loading TTSModel weights from hf://kyutai/pocket-tts/tts_b6369a24.safetensors@427e3d61b276ed69fdd03de0d185fa8a8d97fc5b
+INFO:root:TTS Model loaded successfully. Its size is 471.0 MB
+INFO:pocket_tts_server.model_manager:Patching TTSModel with missing _slice_kv_cache method
+INFO:pocket_tts_server.model_manager:Pocket TTS loaded | Device: cpu | Sample Rate: 24000
+INFO:pocket_tts_server.voices:[96m[1mDefault voices available:[0m
+INFO:pocket_tts_server.voices:[96m   OpenAI aliases: alloy, echo, fable, onyx, nova, shimmer[0m
+INFO:pocket_tts_server.voices:[96m   Pocket TTS: alba, marius, javert, jean, fantine, cosette, eponine, azelma[0m
+INFO:pocket_tts_server.voices:[92m[1mCustom voices loaded: [0m[92mAemeath, Carlotta[0m
+INFO:pocket_tts_server.api:Voice cloning: ENABLED
+2026-03-27 02:44:40,834 - uvicorn.error - INFO - Application startup complete.
+2026-03-27 02:44:40,834 - uvicorn.error - INFO - Uvicorn running on http://0.0.0.0:8005 (Press CTRL+C to quit)
+2026-03-27 02:44:47,334 - uvicorn.error - INFO - 127.0.0.1:43852 - "WebSocket /v1/audio/stream" [accepted]
+2026-03-27 02:44:47,335 - uvicorn.error - INFO - connection open
+INFO:pocket_tts_server.api:WS legacy #1: 197 chars, voice=Carlotta, format=mp3, text='The warning sign hangs still, its red letters glaring against the white tiles, a...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 254 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The warning sign hangs still, its red letters glaring against the white tiles, a...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The warning sign hangs still, its red letters glaring against the white tiles, a...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The warning sign hangs still, its red letters glaring against the white tiles, a...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='The warning sign hangs still, its red letters glaring against the white tiles, a...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 39 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 11680 ms of audio in 6117 ms so 1.91x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #5: 32768 bytes, text='The warning sign hangs still, its red letters glaring against the white tiles, a...'
+INFO:pocket_tts_server.api:WS legacy chunk #6: 8975 bytes, text='The warning sign hangs still, its red letters glaring against the white tiles, a...'
+INFO:pocket_tts_server.api:WS legacy done: 197 chars | 10.8s audio in 6.6s (1.63x) | voice=Carlotta
+2026-03-27 02:44:53,961 - uvicorn.error - INFO - connection closed
+[LEGACY] The warning sign hangs still, its red letters glaring against the white tiles, a
+[CHUNK] 1 The warning sign hangs still, its red letters glaring against the white tiles, a
+[CHUNK] 2 The warning sign hangs still, its red letters glaring against the white tiles, a
+[CHUNK] 3 The warning sign hangs still, its red letters glaring against the white tiles, a
+[CHUNK] 4 The warning sign hangs still, its red letters glaring against the white tiles, a
+[CHUNK] 5 The warning sign hangs still, its red letters glaring against the white tiles, a
+[CHUNK] 6 The warning sign hangs still, its red letters glaring against the white tiles, a
+2026-03-27 03:03:51,597 - 127.0.0.1:49376 - "GET /v1/voices HTTP/1.1" 200 OK
+2026-03-27 03:03:51,603 - 127.0.0.1:49376 - "GET /v1/voices HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:03:51,973 - 127.0.0.1:49376 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:03:52,260 - 127.0.0.1:49376 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:03:52,441 - 127.0.0.1:49376 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:04:01,673 - 127.0.0.1:37256 - "GET /health HTTP/1.1" 200 OK
+2026-03-27 03:04:13,526 - uvicorn.error - INFO - 127.0.0.1:59054 - "WebSocket /v1/audio/stream" [accepted]
+2026-03-27 03:04:13,527 - uvicorn.error - INFO - connection open
+INFO:pocket_tts_server.api:WS legacy #1: 139 chars, voice=Carlotta, format=mp3, text='The metal bench creaks under the sudden weight as Ice pushes himself upright, it...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 285 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The metal bench creaks under the sudden weight as Ice pushes himself upright, it...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The metal bench creaks under the sudden weight as Ice pushes himself upright, it...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The metal bench creaks under the sudden weight as Ice pushes himself upright, it...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 38 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 8400 ms of audio in 4387 ms so 1.91x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #4: 27496 bytes, text='The metal bench creaks under the sudden weight as Ice pushes himself upright, it...'
+INFO:pocket_tts_server.api:WS legacy done: 139 chars | 7.9s audio in 5.0s (1.59x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #2: 173 chars, voice=Carlotta, format=mp3, text='His hands find the edge of the bench, fingers curling around the rust‑stained me...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 255 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='His hands find the edge of the bench, fingers curling around the rust‑stained me...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='His hands find the edge of the bench, fingers curling around the rust‑stained me...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='His hands find the edge of the bench, fingers curling around the rust‑stained me...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 39 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 10000 ms of audio in 5269 ms so 1.90x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='His hands find the edge of the bench, fingers curling around the rust‑stained me...'
+INFO:pocket_tts_server.api:WS legacy chunk #5: 20148 bytes, text='His hands find the edge of the bench, fingers curling around the rust‑stained me...'
+INFO:pocket_tts_server.api:WS legacy done: 173 chars | 9.5s audio in 5.9s (1.61x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #3: 139 chars, voice=Carlotta, format=mp3, text='A thin breath of air brushes past, carrying the faint scent of disinfectant that...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 237 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='A thin breath of air brushes past, carrying the faint scent of disinfectant that...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='A thin breath of air brushes past, carrying the faint scent of disinfectant that...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 39 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 7520 ms of audio in 4067 ms so 1.85x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='A thin breath of air brushes past, carrying the faint scent of disinfectant that...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 16253 bytes, text='A thin breath of air brushes past, carrying the faint scent of disinfectant that...'
+INFO:pocket_tts_server.api:WS legacy done: 139 chars | 7.2s audio in 4.6s (1.56x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #4: 197 chars, voice=Carlotta, format=mp3, text='The sign above the corridor flickers for a heartbeat, the red warning letters fl...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 272 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The sign above the corridor flickers for a heartbeat, the red warning letters fl...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The sign above the corridor flickers for a heartbeat, the red warning letters fl...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The sign above the corridor flickers for a heartbeat, the red warning letters fl...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 37 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 10960 ms of audio in 5460 ms so 2.01x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='The sign above the corridor flickers for a heartbeat, the red warning letters fl...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 58 ms
+INFO:pocket_tts.models.tts_model:Average generation step time: 37 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 1600 ms of audio in 854 ms so 1.87x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #5: 32768 bytes, text='The sign above the corridor flickers for a heartbeat, the red warning letters fl...'
+INFO:pocket_tts_server.api:WS legacy chunk #6: 17103 bytes, text='The sign above the corridor flickers for a heartbeat, the red warning letters fl...'
+INFO:pocket_tts_server.api:WS legacy done: 197 chars | 11.3s audio in 6.8s (1.66x) | voice=Carlotta
+2026-03-27 03:26:26,098 - uvicorn.error - INFO - connection closed
+[LEGACY] The metal bench creaks under the sudden weight as Ice pushes himself upright, it
+[CHUNK] 1 The metal bench creaks under the sudden weight as Ice pushes himself upright, it
+[CHUNK] 2 The metal bench creaks under the sudden weight as Ice pushes himself upright, it
+[CHUNK] 3 The metal bench creaks under the sudden weight as Ice pushes himself upright, it
+[CHUNK] 4 The metal bench creaks under the sudden weight as Ice pushes himself upright, it
+[LEGACY] His hands find the edge of the bench, fingers curling around the rust‑stained me
+[CHUNK] 5 His hands find the edge of the bench, fingers curling around the rust‑stained me
+[CHUNK] 6 His hands find the edge of the bench, fingers curling around the rust‑stained me
+[CHUNK] 7 His hands find the edge of the bench, fingers curling around the rust‑stained me
+[CHUNK] 8 His hands find the edge of the bench, fingers curling around the rust‑stained me
+[CHUNK] 9 His hands find the edge of the bench, fingers curling around the rust‑stained me
+[LEGACY] A thin breath of air brushes past, carrying the faint scent of disinfectant that
+[CHUNK] 10 A thin breath of air brushes past, carrying the faint scent of disinfectant that
+[CHUNK] 11 A thin breath of air brushes past, carrying the faint scent of disinfectant that
+[CHUNK] 12 A thin breath of air brushes past, carrying the faint scent of disinfectant that
+[CHUNK] 13 A thin breath of air brushes past, carrying the faint scent of disinfectant that
+[LEGACY] The sign above the corridor flickers for a heartbeat, the red warning letters fl
+[CHUNK] 14 The sign above the corridor flickers for a heartbeat, the red warning letters fl
+[CHUNK] 15 The sign above the corridor flickers for a heartbeat, the red warning letters fl
+[CHUNK] 16 The sign above the corridor flickers for a heartbeat, the red warning letters fl
+[CHUNK] 17 The sign above the corridor flickers for a heartbeat, the red warning letters fl
+[CHUNK] 18 The sign above the corridor flickers for a heartbeat, the red warning letters fl
+[CHUNK] 19 The sign above the corridor flickers for a heartbeat, the red warning letters fl
+2026-03-27 03:26:30,169 - 127.0.0.1:39480 - "GET /v1/voices HTTP/1.1" 200 OK
+2026-03-27 03:26:30,174 - 127.0.0.1:39480 - "GET /v1/voices HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:26:30,461 - 127.0.0.1:39480 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:26:30,726 - 127.0.0.1:39480 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:26:30,887 - 127.0.0.1:39480 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:26:48,346 - 127.0.0.1:51704 - "GET /health HTTP/1.1" 200 OK
+2026-03-27 03:26:58,358 - uvicorn.error - INFO - 127.0.0.1:38916 - "WebSocket /v1/audio/stream" [accepted]
+2026-03-27 03:26:58,358 - uvicorn.error - INFO - connection open
+INFO:pocket_tts_server.api:WS legacy #1: 133 chars, voice=Carlotta, format=mp3, text='The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 255 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 40 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 8000 ms of audio in 4396 ms so 1.82x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 22721 bytes, text='The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee...'
+INFO:pocket_tts_server.api:WS legacy done: 133 chars | 7.6s audio in 4.9s (1.54x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #2: 154 chars, voice=Carlotta, format=mp3, text='A flicker ripples across the fluorescent tubes overhead, their hum momentarily s...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 247 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='A flicker ripples across the fluorescent tubes overhead, their hum momentarily s...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='A flicker ripples across the fluorescent tubes overhead, their hum momentarily s...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 42 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 8160 ms of audio in 4644 ms so 1.76x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='A flicker ripples across the fluorescent tubes overhead, their hum momentarily s...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 24074 bytes, text='A flicker ripples across the fluorescent tubes overhead, their hum momentarily s...'
+INFO:pocket_tts_server.api:WS legacy done: 154 chars | 7.6s audio in 5.1s (1.49x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #3: 202 chars, voice=Carlotta, format=mp3, text='Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 346 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 40 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 12560 ms of audio in 6897 ms so 1.82x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #5: 32768 bytes, text='Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable...'
+INFO:pocket_tts_server.api:WS legacy chunk #6: 23478 bytes, text='Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable...'
+INFO:pocket_tts_server.api:WS legacy done: 202 chars | 11.7s audio in 7.4s (1.57x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS legacy #4: 191 chars, voice=Carlotta, format=mp3, text='The warning sign above the emergency phone catches the brief light surge, the re...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 273 ms
+INFO:pocket_tts_server.api:WS legacy chunk #1: 32768 bytes, text='The warning sign above the emergency phone catches the brief light surge, the re...'
+INFO:pocket_tts_server.api:WS legacy chunk #2: 32768 bytes, text='The warning sign above the emergency phone catches the brief light surge, the re...'
+INFO:pocket_tts_server.api:WS legacy chunk #3: 32768 bytes, text='The warning sign above the emergency phone catches the brief light surge, the re...'
+INFO:pocket_tts_server.api:WS legacy chunk #4: 32768 bytes, text='The warning sign above the emergency phone catches the brief light surge, the re...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 38 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 11280 ms of audio in 5782 ms so 1.95x faster than real-time
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 95 ms
+INFO:pocket_tts.models.tts_model:Average generation step time: 41 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 1200 ms of audio in 759 ms so 1.58x faster than real-time
+INFO:pocket_tts_server.api:WS legacy chunk #5: 32768 bytes, text='The warning sign above the emergency phone catches the brief light surge, the re...'
+INFO:pocket_tts_server.api:WS legacy chunk #6: 17990 bytes, text='The warning sign above the emergency phone catches the brief light surge, the re...'
+INFO:pocket_tts_server.api:WS legacy done: 191 chars | 11.4s audio in 7.0s (1.62x) | voice=Carlotta
+2026-03-27 03:50:47,147 - uvicorn.error - INFO - connection closed
+[LEGACY] The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee
+[CHUNK] 1 The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee
+[CHUNK] 2 The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee
+[CHUNK] 3 The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee
+[CHUNK] 4 The metal bench emits a low, resonant groan as Ice’s weight lifts, the cold stee
+[LEGACY] A flicker ripples across the fluorescent tubes overhead, their hum momentarily s
+[CHUNK] 5 A flicker ripples across the fluorescent tubes overhead, their hum momentarily s
+[CHUNK] 6 A flicker ripples across the fluorescent tubes overhead, their hum momentarily s
+[CHUNK] 7 A flicker ripples across the fluorescent tubes overhead, their hum momentarily s
+[CHUNK] 8 A flicker ripples across the fluorescent tubes overhead, their hum momentarily s
+[LEGACY] Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable
+[CHUNK] 9 Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable
+[CHUNK] 10 Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable
+[CHUNK] 11 Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable
+[CHUNK] 12 Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable
+[CHUNK] 13 Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable
+[CHUNK] 14 Beyond the bench, the corridor’s steady hum deepens, the distant, unidentifiable
+[LEGACY] The warning sign above the emergency phone catches the brief light surge, the re
+[CHUNK] 15 The warning sign above the emergency phone catches the brief light surge, the re
+[CHUNK] 16 The warning sign above the emergency phone catches the brief light surge, the re
+[CHUNK] 17 The warning sign above the emergency phone catches the brief light surge, the re
+[CHUNK] 18 The warning sign above the emergency phone catches the brief light surge, the re
+[CHUNK] 19 The warning sign above the emergency phone catches the brief light surge, the re
+[CHUNK] 20 The warning sign above the emergency phone catches the brief light surge, the re
+2026-03-27 03:50:55,401 - 127.0.0.1:38278 - "GET /v1/voices HTTP/1.1" 200 OK
+2026-03-27 03:50:55,443 - 127.0.0.1:38278 - "GET /v1/voices HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:50:56,331 - 127.0.0.1:38278 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:50:56,648 - 127.0.0.1:38278 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:50:56,850 - 127.0.0.1:38278 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/whoami-v2 "HTTP/1.1 200 OK"
+2026-03-27 03:51:09,645 - 127.0.0.1:58136 - "GET /health HTTP/1.1" 200 OK
+2026-03-27 03:51:23,270 - uvicorn.error - INFO - 127.0.0.1:43878 - "WebSocket /v1/audio/stream" [accepted]
+2026-03-27 03:51:23,271 - uvicorn.error - INFO - connection open
+INFO:pocket_tts_server.api:WS sentence #1: 142 chars, voice=Carlotta, format=mp3, text='The bench groans as its weight is lifted, the metallic slats resonating a thin, ...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 295 ms
+INFO:pocket_tts_server.api:WS sentence #1 chunk #1: 32768 bytes, text='The bench groans as its weight is lifted, the metallic slats resonating a thin, ...'
+INFO:pocket_tts_server.api:WS sentence #1 chunk #2: 32768 bytes, text='The bench groans as its weight is lifted, the metallic slats resonating a thin, ...'
+INFO:pocket_tts_server.api:WS sentence #1 chunk #3: 32768 bytes, text='The bench groans as its weight is lifted, the metallic slats resonating a thin, ...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 40 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 8560 ms of audio in 4698 ms so 1.82x faster than real-time
+INFO:pocket_tts_server.api:WS sentence #1 chunk #4: 29219 bytes, text='The bench groans as its weight is lifted, the metallic slats resonating a thin, ...'
+INFO:pocket_tts_server.api:WS sentence #1 done: 142 chars | 8.0s audio in 5.2s (1.53x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS sentence #2: 137 chars, voice=Carlotta, format=mp3, text='Light from the fluorescent tubes flickers briefly, casting a wavering strip of p...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 233 ms
+INFO:pocket_tts_server.api:WS sentence #2 chunk #1: 32768 bytes, text='Light from the fluorescent tubes flickers briefly, casting a wavering strip of p...'
+INFO:pocket_tts_server.api:WS sentence #2 chunk #2: 32768 bytes, text='Light from the fluorescent tubes flickers briefly, casting a wavering strip of p...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 41 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 7360 ms of audio in 4174 ms so 1.76x faster than real-time
+INFO:pocket_tts_server.api:WS sentence #2 chunk #3: 32768 bytes, text='Light from the fluorescent tubes flickers briefly, casting a wavering strip of p...'
+INFO:pocket_tts_server.api:WS sentence #2 chunk #4: 12261 bytes, text='Light from the fluorescent tubes flickers briefly, casting a wavering strip of p...'
+INFO:pocket_tts_server.api:WS sentence #2 done: 137 chars | 6.9s audio in 4.7s (1.48x) | voice=Carlotta
+INFO:pocket_tts_server.api:WS sentence #3: 87 chars, voice=Carlotta, format=mp3, text='The sign on the wall remains unmoved, its warnings stark against the sterile whi...'
+INFO:pocket_tts.models.tts_model:starting timer now!
+INFO:pocket_tts.utils.utils:Prompting text took 169 ms
+INFO:pocket_tts_server.api:WS sentence #3 chunk #1: 32768 bytes, text='The sign on the wall remains unmoved, its warnings stark against the sterile whi...'
+INFO:pocket_tts_server.api:WS sentence #3 chunk #2: 32768 bytes, text='The sign on the wall remains unmoved, its warnings stark against the sterile whi...'
+INFO:pocket_tts.models.tts_model:Average generation step time: 38 ms
+INFO:pocket_tts.utils.utils:Waiting for mimi decoder to finish took 0 ms
+INFO:pocket_tts.models.tts_model:Generated: 5920 ms of audio in 3112 ms so 1.90x faster than real-time
+INFO:pocket_tts_server.api:WS sentence #3 chunk #3: 20596 bytes, text='The sign on the wall remains unmoved, its warnings stark against the sterile whi...'
+INFO:pocket_tts_server.api:WS sentence #3 done: 87 chars | 5.4s audio in 3.7s (1.47x) | voice=Carlotta
+2026-03-27 03:52:24,122 - uvicorn.error - INFO - Shutting down
+2026-03-27 03:52:24,123 - uvicorn.error - INFO - connection closed
+2026-03-27 03:52:24,223 - uvicorn.error - INFO - Waiting for application shutdown.
+INFO:pocket_tts_server.api:Shutting down TTS server...
+INFO:pocket_tts_server.model_manager:Unloading TTS model...
+INFO:pocket_tts_server.api:TTS server shutdown complete
+2026-03-27 03:52:24,290 - uvicorn.error - INFO - Application shutdown complete.
+2026-03-27 03:52:24,290 - uvicorn.error - INFO - Finished server process [72099]

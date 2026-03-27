@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Always run from script directory
+cd "$(dirname "$0")" || exit 1
+
 # Default port if not specified
 DEFAULT_PORT=8005
 SCRIPT_NAME="pocketapi.py"

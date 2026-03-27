@@ -20,7 +20,7 @@ from .constants import CACHE_EXTENSIONS, DEFAULT_VOICES, MEDIA_TYPES, VOICE_MAPP
 from .model_manager import model_manager
 from .models import ExportVoiceRequest, SpeechRequest
 from .rate_limiter import rate_limiter
-from .validation import _ffmpeg_available, check_ffmpeg, is_valid_voice_name
+from .validation import _ffmpeg_available, check_ffmpeg, is_valid_voice_name, normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,10 @@ async def lifespan(app: FastAPI):
     from .voices import load_custom_voices
 
     logger.info("Starting TTS API server...")
+
+    # Ensure required directories exist
+    for dir_path in [settings.audio_cache_dir, settings.voices_dir, settings.embeddings_dir]:
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
 
     if not _ffmpeg_available:
         logger.warning("FFmpeg not found. MP3/Opus/AAC/FLAC formats will not work.")
@@ -165,6 +169,7 @@ async def get_formats():
 @app.post("/v1/audio/speech")
 async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks) -> StreamingResponse:
     try:
+        data.input = normalize_text(data.input)
         logger.info(f"TTS request: voice='{data.voice}', format='{data.response_format}', len={len(data.input)}")
 
         if not is_valid_voice_name(data.voice) and data.voice.lower() not in VOICE_MAPPING and data.voice not in VOICE_MAPPING:
@@ -288,14 +293,20 @@ async def clear_cache():
 
 @app.websocket("/v1/audio/stream")
 async def websocket_tts(websocket: WebSocket):
-    """WebSocket endpoint for real-time TTS streaming.
+    """WebSocket endpoint for real-time TTS streaming with sentence buffering.
 
-    Protocol:
+    Protocol (enhanced):
+      Client → Server: {"type": "session.update", "voice": "nova", "format": "mp3", "speed": 1.0}
+      Client → Server: {"type": "text.append", "text": "Hello "}
+      Client → Server: {"type": "text.append", "text": "world."}
+      Server → Client: binary audio chunks
+      Server → Client: {"status": "done", "audio_duration": 2.1, "gen_time": 1.05}
+      Client → Server: {"type": "text.done"}  # optional, flushes remaining buffer
+
+    Legacy protocol (backward compatible):
       Client → Server: {"text": "Hello world", "voice": "nova", "format": "wav", "speed": 1.0}
       Server → Client: binary audio chunks
       Server → Client: {"status": "done", "audio_duration": 2.1, "gen_time": 1.05}
-
-    Can be called multiple times per connection for sequential generations.
     """
     await websocket.accept()
 
@@ -307,44 +318,150 @@ async def websocket_tts(websocket: WebSocket):
     # Bytes per second estimates for duration calculation
     _bps = {"wav": 48000, "mp3": 16000, "opus": 8000, "aac": 16000, "flac": 32000, "pcm": 48000}
 
+    # Sentence detection regex (same as realtime endpoint)
+    SENTENCE_RE = re.compile(r'([^.!?]*[.!?])\s*')
+    MAX_BUFFER_SIZE = 200  # characters
+
     try:
-        while True:
-            data = await websocket.receive_json()
-
-            text = data.get("input") or data.get("text", "")
-            voice = data.get("voice", "alloy")
-            fmt = data.get("format") or data.get("response_format", "wav")
-            speed = float(data.get("speed", 1.0))
-            temperature = float(data.get("temperature", settings.temperature))
-            top_p = float(data.get("top_p", settings.top_p))
-            repetition_penalty = float(data.get("repetition_penalty", settings.repetition_penalty))
-            lsd_decode_steps = int(data.get("lsd_decode_steps", settings.lsd_decode_steps))
-            model_tier = data.get("model", settings.model_tier)
-
-            if not text.strip():
-                await websocket.send_json({"error": "Empty text", "status": "error"})
-                continue
-
+        # Session state
+        voice = "nova"
+        fmt = "mp3"
+        speed = 1.0
+        temperature = settings.temperature
+        top_p = settings.top_p
+        repetition_penalty = settings.repetition_penalty
+        lsd_decode_steps = settings.lsd_decode_steps
+        model_tier = settings.model_tier
+        
+        # Text buffer for sentence accumulation
+        buffer = ""
+        request_count = 0
+        chunk_count_total = 0
+        last_text_time = time.time()
+        flush_task = None
+        gen_speed = 1.0  # Start with assumption of real-time generation
+        text_done_received = False
+        
+        async def flush_buffer_now(force=False):
+            """Flush buffer immediately, splitting on punctuation only."""
+            nonlocal buffer
+            if not buffer.strip():
+                return
+                
+            # Keep all characters for TTS - don't strip quotes
+            # The TTS model can handle quotes and punctuation naturally
+            
+            print(f"[FLUSH] Buffer ({len(buffer)} chars): {buffer[:80]}")
+            flush_text = buffer
+            
+            # Try to split at sentence-ending punctuation first
+            sent_match = SENTENCE_RE.search(flush_text)
+            if sent_match:
+                # Found sentence ending, split there
+                split_pos = sent_match.end()
+                to_send = flush_text[:split_pos].strip()
+                buffer = flush_text[split_pos:].strip()
+                if to_send:
+                    await generate_and_send_audio(to_send)
+                return
+            
+            # No sentence ending, try to split at comma or colon
+            for punct in [', ', ': ', '; ']:
+                last_punct = flush_text.rfind(punct)
+                if last_punct >= 20 and last_punct < len(flush_text) - 1:
+                    to_send = flush_text[:last_punct + 1].strip()
+                    buffer = flush_text[last_punct + 1:].strip()
+                    print(f"[FLUSH] Split at '{punct.strip()}': '{to_send[:40]}...' / '{buffer[:40]}...'")
+                    if to_send:
+                        await generate_and_send_audio(to_send)
+                    return
+            
+            # No punctuation found - send whole buffer
+            print(f"[FLUSH] No punctuation, sending whole buffer: '{flush_text[:80]}'")
+            if flush_text:
+                await generate_and_send_audio(flush_text)
+            buffer = ""
+        
+        async def flush_incomplete_after_timeout():
+            """Flush buffer after inactivity timeout, adaptive based on generation speed."""
+            nonlocal buffer, flush_task, gen_speed, text_done_received, websocket
+            try:
+                # Base timeout is 2 seconds, but adjust based on generation speed
+                # If generating faster than real-time (speed > 1.0), we can wait longer
+                # If generating slower (speed < 1.0), send sooner
+                base_timeout = 2.0
+                speed_factor = max(0.5, min(2.0, gen_speed))  # Clamp between 0.5x and 2.0x
+                adaptive_timeout = base_timeout * speed_factor
+                
+                print(f"[TIMEOUT] Waiting {adaptive_timeout:.1f}s (gen_speed: {gen_speed:.2f}x)")
+                await asyncio.sleep(adaptive_timeout)
+                
+                if buffer.strip():
+                    await flush_buffer_now()
+                
+                # If text.done was received and buffer is now empty, send session_ended
+                if text_done_received and not buffer.strip():
+                    await websocket.send_json({"status": "session_ended"})
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"Timeout flush error: {e}")
+            flush_task = None
+        
+        async def generate_and_send_audio(sentence: str):
+            """Generate audio for a complete sentence and send to client."""
+            nonlocal request_count, chunk_count_total, gen_speed, text_done_received, buffer
+            sentence = sentence.strip()
+            if not sentence:
+                return
+                
+            request_count += 1
+            print(f"[SENTENCE] {sentence[:80]}")
+            logger.info(f"WS sentence #{request_count}: {len(sentence)} chars, voice={voice}, format={fmt}, text='{sentence[:80]}...'")
+            
             try:
                 t0 = time.time()
                 total_bytes = 0
+                chunk_count = 0
+                sentence_chunks = []  # collect for debug file save
 
                 async for chunk in generate_audio(
-                    text=text, voice=voice, speed=speed, format=fmt,
+                    text=sentence, voice=voice, speed=speed, format=fmt,
                     temperature=temperature, top_p=top_p,
                     repetition_penalty=repetition_penalty,
                     lsd_decode_steps=lsd_decode_steps, model_tier=model_tier,
                 ):
                     total_bytes += len(chunk)
+                    chunk_count += 1
+                    chunk_count_total += 1
+                    sentence_chunks.append(chunk)
+                    logger.info(f"WS sentence #{request_count} chunk #{chunk_count}: {len(chunk)} bytes, text='{sentence[:80]}...'")
                     await websocket.send_bytes(chunk)
+
+                # Save debug audio file
+                try:
+                    debug_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'debug_audio')
+                    os.makedirs(debug_dir, exist_ok=True)
+                    ext = fmt if fmt in ('mp3', 'wav', 'opus', 'flac', 'aac') else 'mp3'
+                    fname = f"{request_count:03d}_sentence.{ext}"
+                    fpath = os.path.join(debug_dir, fname)
+                    with open(fpath, 'wb') as f:
+                        for c in sentence_chunks:
+                            f.write(c)
+                    print(f"[DEBUG] Saved {fname}: {total_bytes} bytes, text='{sentence[:60]}'")
+                except Exception as e:
+                    print(f"[DEBUG] Failed to save audio: {e}")
 
                 gen_time = time.time() - t0
                 bps = _bps.get(fmt, 16000) / max(speed, 0.5)
                 audio_duration = total_bytes / bps
-
-                # Text stats
-                sentences = [s.strip() for s in re.split(r'[.!?…]+', text) if s.strip()]
-                words = text.split()
+                
+                # Update generation speed with exponential moving average
+                if gen_time > 0:
+                    current_speed = audio_duration / gen_time
+                    # EMA with alpha=0.3 for smoothing
+                    gen_speed = 0.3 * current_speed + 0.7 * gen_speed
+                    print(f"[SPEED] Generation speed: {current_speed:.2f}x, EMA: {gen_speed:.2f}x")
 
                 await websocket.send_json({
                     "status": "done",
@@ -353,14 +470,154 @@ async def websocket_tts(websocket: WebSocket):
                 })
 
                 logger.info(
-                    "WS: %d sentences, %d words, %d chars | %.1fs audio in %.1fs (%.2fx) | voice=%s",
-                    len(sentences), len(words), len(text),
+                    "WS sentence #%d done: %d chars | %.1fs audio in %.1fs (%.2fx) | voice=%s",
+                    request_count, len(sentence),
                     audio_duration, gen_time, audio_duration / max(gen_time, 0.01),
                     voice,
                 )
+                
+                # If text.done was received and buffer is empty, send session_ended
+                if text_done_received and not buffer.strip():
+                    print(f"[SESSION] All text processed, sending session_ended")
+                    await websocket.send_json({"status": "session_ended"})
             except Exception as e:
-                logger.exception(f"WebSocket generation error")
+                logger.exception(f"WebSocket generation error (sentence #{request_count})")
                 await websocket.send_json({"error": str(e), "status": "error"})
+
+        async def drain_buffer():
+            """Process complete sentences from buffer."""
+            nonlocal buffer, last_text_time, flush_task, text_done_received, websocket
+            # Cancel existing timeout
+            if flush_task and not flush_task.done():
+                flush_task.cancel()
+                flush_task = None
+            
+            # Log buffer state for debugging
+            print(f"[DRAIN] Buffer ({len(buffer)} chars): '{buffer[:80]}...'")
+            
+            while True:
+                match = SENTENCE_RE.search(buffer)
+                if not match:
+                    break
+                sentence = match.group(1).strip()
+                buffer = buffer[match.end():]
+                if sentence:
+                    print(f"[DRAIN] Found sentence: '{sentence[:60]}...'")
+                    await generate_and_send_audio(sentence)
+            
+            # If buffer is too large, log warning — only complete sentences are flushed above
+            if len(buffer.strip()) >= MAX_BUFFER_SIZE:
+                print(f"[DRAIN] Buffer large ({len(buffer)} chars) but no sentence ending yet, waiting...")
+            
+            # If text.done was received and buffer is empty, send session_ended
+            if text_done_received and not buffer.strip():
+                print(f"[SESSION] All text processed, sending session_ended")
+                await websocket.send_json({"status": "session_ended"})
+                return
+            
+            last_text_time = time.time()
+            # Start timeout for any remaining text (will try to split at grammar points)
+            if buffer.strip() and not flush_task:
+                print(f"[DRAIN] Starting timeout for remaining {len(buffer)} chars")
+                flush_task = asyncio.create_task(flush_incomplete_after_timeout())
+
+        # Main message loop
+        while True:
+            try:
+                data = await websocket.receive_json()
+            except Exception:
+                break
+
+            # Update last text time
+            last_text_time = time.time()
+            
+            # Check message type
+            msg_type = data.get("type")
+            
+            if msg_type == "session.update":
+                # Update session parameters
+                session = data.get("session", {})
+                voice = session.get("voice", voice)
+                fmt = session.get("format", fmt)
+                speed = float(session.get("speed", speed))
+                temperature = float(session.get("temperature", temperature))
+                top_p = float(session.get("top_p", top_p))
+                repetition_penalty = float(session.get("repetition_penalty", repetition_penalty))
+                lsd_decode_steps = int(session.get("lsd_decode_steps", lsd_decode_steps))
+                model_tier = session.get("model", model_tier)
+                
+            elif msg_type == "text.append":
+                # Append text to buffer
+                text = data.get("text", "")
+                if text:
+                    buffer += normalize_text(text)
+                    await drain_buffer()
+                    
+            elif msg_type == "text.done":
+                # Mark that no more text is coming
+                text_done_received = True
+                print(f"[TEXT.DONE] {len(buffer)} chars remaining")
+                # Check if we can send session_ended (buffer empty after all sentences extracted)
+                await drain_buffer()
+                
+            else:
+                # Legacy protocol: treat as immediate text
+                text = data.get("input") or data.get("text", "")
+                voice = data.get("voice", voice)
+                fmt = data.get("format") or data.get("response_format", fmt)
+                speed = float(data.get("speed", speed))
+                temperature = float(data.get("temperature", temperature))
+                top_p = float(data.get("top_p", top_p))
+                repetition_penalty = float(data.get("repetition_penalty", repetition_penalty))
+                lsd_decode_steps = int(data.get("lsd_decode_steps", lsd_decode_steps))
+                model_tier = data.get("model", model_tier)
+                text = normalize_text(text)
+
+                if not text.strip():
+                    await websocket.send_json({"error": "Empty text", "status": "error"})
+                    continue
+
+                # Generate audio for complete text
+                print(f"[LEGACY] {text[:80]}")
+                logger.info(f"WS legacy #{request_count+1}: {len(text)} chars, voice={voice}, format={fmt}, text='{text[:80]}...'")
+                
+                try:
+                    t0 = time.time()
+                    total_bytes = 0
+                    chunk_count = 0
+
+                    async for chunk in generate_audio(
+                        text=text, voice=voice, speed=speed, format=fmt,
+                        temperature=temperature, top_p=top_p,
+                        repetition_penalty=repetition_penalty,
+                        lsd_decode_steps=lsd_decode_steps, model_tier=model_tier,
+                    ):
+                        total_bytes += len(chunk)
+                        chunk_count += 1
+                        chunk_count_total += 1
+                        print(f"[CHUNK] {chunk_count_total} {text[:80]}")
+                        logger.info(f"WS legacy chunk #{chunk_count}: {len(chunk)} bytes, text='{text[:80]}...'")
+                        await websocket.send_bytes(chunk)
+
+                    gen_time = time.time() - t0
+                    bps = _bps.get(fmt, 16000) / max(speed, 0.5)
+                    audio_duration = total_bytes / bps
+
+                    await websocket.send_json({
+                        "status": "done",
+                        "audio_duration": round(audio_duration, 3),
+                        "gen_time": round(gen_time, 3),
+                    })
+
+                    logger.info(
+                        "WS legacy done: %d chars | %.1fs audio in %.1fs (%.2fx) | voice=%s",
+                        len(text), audio_duration, gen_time, audio_duration / max(gen_time, 0.01),
+                        voice,
+                    )
+                    request_count += 1
+                except Exception as e:
+                    logger.exception(f"WebSocket generation error (legacy)")
+                    await websocket.send_json({"error": str(e), "status": "error"})
 
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")
@@ -410,14 +667,19 @@ async def websocket_realtime_tts(websocket: WebSocket):
             sentence = sentence.strip()
             if not sentence:
                 return
+            print(f"[REALTIME RECEIVED] {sentence}")
             logger.info(f"[Realtime] Generating: '{sentence[:60]}...'")
             try:
+                chunk_count = 0
                 async for chunk in generate_audio(
                     text=sentence, voice=voice, speed=speed, format=fmt,
                     temperature=temperature, top_p=top_p,
                     repetition_penalty=repetition_penalty,
                     lsd_decode_steps=lsd_decode_steps, model_tier=model_tier,
                 ):
+                    chunk_count += 1
+                    print(f"[REALTIME CHUNK] {chunk_count} {sentence[:80]}")
+                    logger.info(f"[Realtime] chunk #{chunk_count}: {len(chunk)} bytes, sentence='{sentence[:80]}'")
                     await websocket.send_bytes(chunk)
                 await websocket.send_json({"type": "response.audio.done"})
             except (RuntimeError, Exception) as e:
@@ -448,7 +710,7 @@ async def websocket_realtime_tts(websocket: WebSocket):
             if msg_type == "input_text.append":
                 text = data.get("text", "")
                 if text:
-                    buffer += text
+                    buffer += normalize_text(text)
                     await drain_buffer()
             elif msg_type == "input_text.done":
                 break

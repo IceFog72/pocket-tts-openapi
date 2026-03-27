@@ -11,6 +11,7 @@ import uuid
 import wave
 from queue import Empty, Full, Queue
 from typing import AsyncIterator, Optional, Tuple
+from pathlib import Path
 
 # Patch wave.Wave_write.close to handle IOError on client disconnect
 _orig_wave_close = wave.Wave_write.close
@@ -343,6 +344,7 @@ async def generate_audio(
     model_tier: str = settings.model_tier,
     stream: bool = False,
     background_tasks: Optional[BackgroundTasks] = None,
+    skip_cache: bool = False,
 ) -> AsyncIterator[bytes]:
     if not model_manager.is_loaded:
         raise HTTPException(status_code=503, detail="TTS model not loaded")
@@ -361,25 +363,35 @@ async def generate_audio(
     else:
         voice_name = VOICE_MAPPING.get(voice, voice)
 
-    cache_hash = cache_manager.generate_cache_key(
-        text, voice_name, format, speed, temperature,
-        lsd_decode_steps, top_p, repetition_penalty, model_tier
-    )
-    cache_path, meta_path = cache_manager.get_cache_path(cache_hash, format)
+    # Skip caching for WebSocket streaming or when explicitly requested
+    if skip_cache:
+        cache_path = None
+        meta_path = None
+        temp_path = None
+    else:
+        cache_hash = cache_manager.generate_cache_key(
+            text, voice_name, format, speed, temperature,
+            lsd_decode_steps, top_p, repetition_penalty, model_tier
+        )
+        cache_path, meta_path = cache_manager.get_cache_path(cache_hash, format)
 
-    if cache_manager.check_cache(cache_path):
-        try:
-            async with await open_file(cache_path, "rb") as f:
-                while True:
-                    chunk = await f.read(chunk_size)
-                    if not chunk:
-                        break
-                    yield chunk
-            return
-        except (IOError, OSError) as e:
-            logger.warning(f"Failed to read cache file, regenerating: {e}")
+        # Ensure cache directory exists
+        cache_dir = Path(settings.audio_cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
-    temp_path = f"{cache_path}.{uuid.uuid4().hex}.tmp"
+        if cache_manager.check_cache(cache_path):
+            try:
+                async with await open_file(cache_path, "rb") as f:
+                    while True:
+                        chunk = await f.read(chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+                return
+            except (IOError, OSError) as e:
+                logger.warning(f"Failed to read cache file, regenerating: {e}")
+
+        temp_path = f"{cache_path}.{uuid.uuid4().hex}.tmp"
 
     try:
         async with await open_file(temp_path, "wb") as cache_file:
