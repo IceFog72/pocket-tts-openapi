@@ -381,6 +381,7 @@ async def generate_audio(
 
         if cache_manager.check_cache(cache_path):
             try:
+                logger.info(f"Cache hit: {text[:60]}... ({os.path.getsize(cache_path)} bytes)")
                 async with await open_file(cache_path, "rb") as f:
                     while True:
                         chunk = await f.read(chunk_size)
