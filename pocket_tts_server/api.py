@@ -343,6 +343,7 @@ async def websocket_tts(websocket: WebSocket):
         flush_task = None
         gen_speed = 1.0  # Start with assumption of real-time generation
         text_done_received = False
+        buffer = ""  # text buffer for enhanced protocol
         
         async def flush_buffer_now(force=False):
             """Flush buffer immediately, splitting on punctuation only."""
