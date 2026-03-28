@@ -603,6 +603,7 @@ async def websocket_tts(websocket: WebSocket):
                     nonlocal pending_len
                     text = normalize_text(msg_data.get("input") or msg_data.get("text", ""))
                     req_id = msg_data.get("request_id")
+                    is_retry = msg_data.get("retry", False)
 
                     # Read per-request params (fall back to session defaults)
                     req_voice = msg_data.get("voice", voice)
@@ -616,7 +617,16 @@ async def websocket_tts(websocket: WebSocket):
                         await websocket.send_json({"error": "Empty text", "status": "error", "request_id": req_id})
                         return True
 
-                    if len(text) >= MIN_MERGE:
+                    # Retry requests get priority — flush pending buffer, then process immediately
+                    if is_retry:
+                        await flush_pending()
+                        logger.info(f"WS retry: req_id={req_id} | voice={req_voice} | '{text[:50]}'")
+                        chunks, dur, gen_t = await gen_audio(
+                            text, req_voice, req_fmt, req_speed,
+                            req_temperature, req_top_p, req_model,
+                        )
+                        await send_audio(chunks, dur, gen_t, [req_id])
+                    elif len(text) >= MIN_MERGE:
                         # Long sentence — flush buffer first, then generate alone
                         await flush_pending()
                         logger.info(f"WS gen: req_id={req_id} | voice={req_voice} | '{text[:50]}'")
