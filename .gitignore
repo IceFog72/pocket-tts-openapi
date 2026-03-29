@@ -37,3 +37,4 @@ ARCHITECTURE.md
 server.log
 node_modules/
 test_streaming.js
+server.log
