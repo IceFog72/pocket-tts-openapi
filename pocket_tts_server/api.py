@@ -540,12 +540,12 @@ async def websocket_tts(websocket: WebSocket):
                 
             else:
                 # ─── Legacy protocol: inline processing with sentence merging ───
-                # Short sentences (< 30 chars) are buffered and merged before
-                # generating audio. Long sentences trigger a flush of any buffered
-                # shorts, then generate alone. Connection stays alive until disconnect.
+                # Short sentences (< 40 chars) are buffered and merged before
+                # generating audio. Text with odd quote count uses threshold 50.
+                # Long sentences trigger a flush, then generate alone. Connection stays alive until disconnect.
                 logger.info(f"WS legacy: first msg req_id={data.get('request_id')}")
 
-                MIN_MERGE = 30  # sentences shorter than this are buffered for merging
+                MIN_MERGE = 40  # sentences shorter than this are buffered for merging
                 pending = []    # [{text, request_id, voice, format, speed, temperature, top_p, model}]
                 pending_len = 0
 
@@ -618,6 +618,10 @@ async def websocket_tts(websocket: WebSocket):
                         await websocket.send_json({"error": "Empty text", "status": "error", "request_id": req_id})
                         return True
 
+                    # If text has odd count of double quotes, raise threshold to 50
+                    # to avoid merging an incomplete quoted segment
+                    merge_threshold = 50 if text.count('"') % 2 != 0 else MIN_MERGE
+
                     # Retry requests get priority — flush pending buffer, then process immediately
                     if is_retry:
                         await flush_pending()
@@ -627,7 +631,7 @@ async def websocket_tts(websocket: WebSocket):
                             req_temperature, req_top_p, req_model,
                         )
                         await send_audio(chunks, dur, gen_t, [req_id])
-                    elif len(text) >= MIN_MERGE:
+                    elif len(text) >= merge_threshold:
                         # Long sentence — flush buffer first, then generate alone
                         await flush_pending()
                         logger.info(f"WS gen: req_id={req_id} | voice={req_voice} | '{text[:50]}'")
@@ -644,7 +648,9 @@ async def websocket_tts(websocket: WebSocket):
                             "temperature": req_temperature, "top_p": req_top_p, "model": req_model,
                         })
                         pending_len += len(text)
-                        if pending_len >= MIN_MERGE or len(pending) >= 5:
+                        # Use higher flush threshold if any buffered text has odd quotes
+                        flush_threshold = 50 if any(p["text"].count('"') % 2 != 0 for p in pending) else MIN_MERGE
+                        if pending_len >= flush_threshold or len(pending) >= 5:
                             await flush_pending()
 
                     return True
