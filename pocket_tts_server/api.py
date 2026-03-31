@@ -298,20 +298,15 @@ async def clear_cache():
 
 @app.websocket("/v1/audio/stream")
 async def websocket_tts(websocket: WebSocket):
-    """WebSocket endpoint for real-time TTS streaming with sentence buffering.
+    """WebSocket endpoint for TTS streaming with sentence merging.
 
-    Protocol (enhanced):
-      Client → Server: {"type": "session.update", "voice": "nova", "format": "mp3", "speed": 1.0}
-      Client → Server: {"type": "text.append", "text": "Hello "}
-      Client → Server: {"type": "text.append", "text": "world."}
-      Server → Client: binary audio chunks
-      Server → Client: {"status": "done", "audio_duration": 2.1, "gen_time": 1.05}
-      Client → Server: {"type": "text.done"}  # optional, flushes remaining buffer
-
-    Legacy protocol (backward compatible):
-      Client → Server: {"text": "Hello world", "voice": "nova", "format": "wav", "speed": 1.0}
-      Server → Client: binary audio chunks
-      Server → Client: {"status": "done", "audio_duration": 2.1, "gen_time": 1.05}
+    Protocol:
+      Client -> Server: {"type": "text.append", "text": "sentence", "voice": "nova", "format": "mp3", "request_id": "r0", "speed": 1.0}
+      Client -> Server: {"type": "text.append", "text": "sentence2", "voice": "nova", "format": "mp3", "request_id": "r1", "speed": 1.0}
+      Client -> Server: {"type": "text.done"}
+      Server -> Client: binary audio chunks
+      Server -> Client: {"status": "done", "audio_duration": 2.1, "gen_time": 1.05, "request_id": ["r0", "r1"]}
+      Server -> Client: {"status": "session_ended"}
     """
     await websocket.accept()
 
@@ -323,181 +318,122 @@ async def websocket_tts(websocket: WebSocket):
     # Bytes per second estimates for duration calculation
     _bps = {"wav": 48000, "mp3": 16000, "opus": 8000, "aac": 16000, "flac": 32000, "pcm": 48000}
 
-    # Sentence detection regex (same as realtime endpoint)
-    SENTENCE_RE = re.compile(r'([^.!?]*[.!?])\s*')
-    MAX_BUFFER_SIZE = 200  # characters
-
     try:
-        # Session state
-        voice = "nova"
-        fmt = "mp3"
-        speed = 1.0
-        temperature = settings.temperature
-        top_p = settings.top_p
-        repetition_penalty = settings.repetition_penalty
-        lsd_decode_steps = settings.lsd_decode_steps
-        model_tier = settings.model_tier
+        # Merge queue — accumulates short sentences, flushed on threshold or text.done
+        merge_queue = []  # [{text, request_id, voice, format, speed, temperature, top_p, model}]
+        merge_queue_len = 0
+        MIN_MERGE = 40
+
         request_count = 0
         chunk_count_total = 0
-        last_text_time = time.time()
-        flush_task = None
-        gen_speed = 1.0  # Start with assumption of real-time generation
+        gen_speed = 1.0
         text_done_received = False
-        buffer = ""  # text buffer for enhanced protocol
-        
-        async def flush_buffer_now(force=False):
-            """Flush buffer immediately, splitting on punctuation only."""
-            nonlocal buffer
-            if not buffer.strip():
+        session_ended_sent = False
+        flush_task = None
+        last_text_time = time.time()
+
+        # Defaults for optional per-append params
+        default_speed = 1.0
+        default_temperature = settings.temperature
+        default_top_p = settings.top_p
+        default_repetition_penalty = settings.repetition_penalty
+        default_lsd_decode_steps = settings.lsd_decode_steps
+        default_model_tier = settings.model_tier
+
+        async def try_send_session_ended():
+            """Send session_ended exactly once when all text is processed."""
+            nonlocal session_ended_sent
+            if session_ended_sent:
                 return
-                
-            # Keep all characters for TTS - don't strip quotes
-            # The TTS model can handle quotes and punctuation naturally
-            
-            logger.debug(f"WS flush: {len(buffer)} chars")
-            flush_text = buffer
-            
-            # Try to split at sentence-ending punctuation first
-            sent_match = SENTENCE_RE.search(flush_text)
-            if sent_match:
-                # Found sentence ending, split there
-                split_pos = sent_match.end()
-                to_send = flush_text[:split_pos].strip()
-                buffer = flush_text[split_pos:].strip()
-                if to_send:
-                    await generate_and_send_audio(to_send)
+            if text_done_received and not merge_queue:
+                session_ended_sent = True
+                logger.debug("WS session ended")
+                await websocket.send_json({"status": "session_ended"})
+
+        async def gen_audio(text, v, f, sp, temp, tp, mt):
+            """Generate audio for normalized text. Returns (chunks, duration, gen_time)."""
+            gen_chunks = []
+            t0 = time.time()
+            async for chunk in generate_audio(
+                text=text, voice=v, speed=sp, format=f,
+                temperature=temp, top_p=tp,
+                repetition_penalty=default_repetition_penalty,
+                lsd_decode_steps=default_lsd_decode_steps, model_tier=mt,
+            ):
+                gen_chunks.append(chunk)
+            gen_time = time.time() - t0
+            total_bytes = sum(len(c) for c in gen_chunks)
+            bps_val = _bps.get(f, 16000) / max(sp, 0.5)
+            audio_duration = total_bytes / bps_val
+            return gen_chunks, audio_duration, gen_time
+
+        async def send_audio(chunks, audio_duration, gen_time, req_ids):
+            """Send audio chunks and done message."""
+            nonlocal chunk_count_total, request_count, gen_speed
+            for c in chunks:
+                chunk_count_total += 1
+                await websocket.send_bytes(c)
+            await websocket.send_json({
+                "status": "done",
+                "audio_duration": round(audio_duration, 3),
+                "gen_time": round(gen_time, 3),
+                "request_id": req_ids,
+            })
+            label = f"merged {len(req_ids)}" if len(req_ids) > 1 else "single"
+            logger.info(f"WS done: {audio_duration:.1f}s | {label} | ids={req_ids}")
+            request_count += 1
+
+            if gen_time > 0:
+                current_speed = audio_duration / gen_time
+                gen_speed = 0.3 * current_speed + 0.7 * gen_speed
+
+        async def flush_merge_queue():
+            """Generate and send audio for buffered short sentences."""
+            nonlocal merge_queue_len
+            if not merge_queue:
                 return
-            
-            # No sentence ending, try to split at comma or colon
-            for punct in [', ', ': ', '; ']:
-                last_punct = flush_text.rfind(punct)
-                if last_punct >= 20 and last_punct < len(flush_text) - 1:
-                    to_send = flush_text[:last_punct + 1].strip()
-                    buffer = flush_text[last_punct + 1:].strip()
-                    logger.debug(f"WS flush split at '{punct.strip()}': '{to_send[:40]}...'")
-                    if to_send:
-                        await generate_and_send_audio(to_send)
-                    return
-            
-            # No punctuation found - send whole buffer
-            logger.debug(f"WS flush whole buffer: '{flush_text[:80]}'")
-            if flush_text:
-                await generate_and_send_audio(flush_text)
-            buffer = ""
-        
-        async def flush_incomplete_after_timeout():
-            """Flush buffer after inactivity timeout, adaptive based on generation speed."""
-            nonlocal buffer, flush_task, gen_speed, text_done_received, websocket
+            # Group by params — items with different params must be generated separately
+            groups = {}
+            for entry in merge_queue:
+                key = (entry["voice"], entry["format"], entry["speed"],
+                       entry["temperature"], entry["top_p"], entry["model"])
+                groups.setdefault(key, []).append(entry)
+            merge_queue.clear()
+            merge_queue_len = 0
+            for (v, f, sp, temp, tp, mt), items in groups.items():
+                merged_text = "\n".join(e["text"] for e in items)
+                merged_ids = [e["request_id"] for e in items]
+                try:
+                    chunks, dur, gen_t = await gen_audio(merged_text, v, f, sp, temp, tp, mt)
+                    await send_audio(chunks, dur, gen_t, merged_ids)
+                except Exception:
+                    for rid in merged_ids:
+                        try:
+                            await websocket.send_json({
+                                "error": "Generation failed", "status": "error",
+                                "request_id": rid,
+                            })
+                        except Exception:
+                            break
+                    raise
+            await try_send_session_ended()
+
+        async def inactivity_timeout():
+            """Flush merge queue after inactivity timeout (adaptive)."""
+            nonlocal flush_task
             try:
-                # Base timeout is 2 seconds, but adjust based on generation speed
-                # If generating faster than real-time (speed > 1.0), we can wait longer
-                # If generating slower (speed < 1.0), send sooner
-                base_timeout = 2.0
-                speed_factor = max(0.5, min(2.0, gen_speed))  # Clamp between 0.5x and 2.0x
-                adaptive_timeout = base_timeout * speed_factor
-                
-                logger.debug(f"WS flush timeout {adaptive_timeout:.1f}s")
-                await asyncio.sleep(adaptive_timeout)
-                
-                if buffer.strip():
-                    await flush_buffer_now()
-                
-                # If text.done was received and buffer is now empty, send session_ended
-                if text_done_received and not buffer.strip():
-                    await websocket.send_json({"status": "session_ended"})
+                timeout = 15.0 * max(0.5, min(2.0, gen_speed))
+                logger.debug(f"WS inactivity timeout {timeout:.1f}s")
+                await asyncio.sleep(timeout)
+                if merge_queue:
+                    logger.debug(f"WS timeout flush: {len(merge_queue)} items")
+                    await flush_merge_queue()
+                await try_send_session_ended()
             except asyncio.CancelledError:
                 pass
             except Exception as e:
                 logger.error(f"Timeout flush error: {e}")
             flush_task = None
-        
-        async def generate_and_send_audio(sentence: str):
-            """Generate audio for a complete sentence and send to client."""
-            nonlocal request_count, chunk_count_total, gen_speed, text_done_received, buffer
-            sentence = sentence.strip()
-            if not sentence:
-                return
-                
-            request_count += 1
-            logger.info(f"WS sentence #{request_count}: {len(sentence)} chars, voice={voice}, format={fmt}")
-            
-            try:
-                t0 = time.time()
-                total_bytes = 0
-                chunk_count = 0
-
-                async for chunk in generate_audio(
-                    text=sentence, voice=voice, speed=speed, format=fmt,
-                    temperature=temperature, top_p=top_p,
-                    repetition_penalty=repetition_penalty,
-                    lsd_decode_steps=lsd_decode_steps, model_tier=model_tier,
-                ):
-                    total_bytes += len(chunk)
-                    chunk_count += 1
-                    chunk_count_total += 1
-                    await websocket.send_bytes(chunk)
-
-                gen_time = time.time() - t0
-                bps = _bps.get(fmt, 16000) / max(speed, 0.5)
-                audio_duration = total_bytes / bps
-                
-                # Update generation speed with exponential moving average
-                if gen_time > 0:
-                    current_speed = audio_duration / gen_time
-                    gen_speed = 0.3 * current_speed + 0.7 * gen_speed
-
-                await websocket.send_json({
-                    "status": "done",
-                    "audio_duration": round(audio_duration, 3),
-                    "gen_time": round(gen_time, 3),
-                })
-
-                logger.info(
-                    "WS sentence #%d done: %d chars | %.1fs audio in %.1fs (%.2fx) | voice=%s",
-                    request_count, len(sentence),
-                    audio_duration, gen_time, audio_duration / max(gen_time, 0.01),
-                    voice,
-                )
-                
-                # If text.done was received and buffer is empty, send session_ended
-                if text_done_received and not buffer.strip():
-                    logger.debug("WS session ended")
-                    await websocket.send_json({"status": "session_ended"})
-            except Exception as e:
-                logger.exception(f"WebSocket generation error (sentence #{request_count})")
-                await websocket.send_json({"error": str(e), "status": "error"})
-
-        async def drain_buffer():
-            """Process complete sentences from buffer."""
-            nonlocal buffer, last_text_time, flush_task, text_done_received, websocket
-            # Cancel existing timeout
-            if flush_task and not flush_task.done():
-                flush_task.cancel()
-                flush_task = None
-            
-            while True:
-                match = SENTENCE_RE.search(buffer)
-                if not match:
-                    break
-                sentence = match.group(1).strip()
-                buffer = buffer[match.end():]
-                if sentence:
-                    await generate_and_send_audio(sentence)
-            
-            # If buffer is too large, log warning
-            if len(buffer.strip()) >= MAX_BUFFER_SIZE:
-                logger.warning(f"WS buffer large ({len(buffer)} chars) with no sentence ending")
-            
-            # If text.done was received and buffer is empty, send session_ended
-            if text_done_received and not buffer.strip():
-                logger.debug("WS session ended")
-                await websocket.send_json({"status": "session_ended"})
-                return
-            
-            last_text_time = time.time()
-            # Start timeout for any remaining text
-            if buffer.strip() and not flush_task:
-                flush_task = asyncio.create_task(flush_incomplete_after_timeout())
 
         # Main message loop
         while True:
@@ -506,178 +442,94 @@ async def websocket_tts(websocket: WebSocket):
             except Exception:
                 break
 
-            # Update last text time
             last_text_time = time.time()
-            
-            # Check message type
             msg_type = data.get("type")
-            
-            if msg_type == "session.update":
-                # Update session parameters
-                session = data.get("session", {})
-                voice = session.get("voice", voice)
-                fmt = session.get("format", fmt)
-                speed = float(session.get("speed", speed))
-                temperature = float(session.get("temperature", temperature))
-                top_p = float(session.get("top_p", top_p))
-                repetition_penalty = float(session.get("repetition_penalty", repetition_penalty))
-                lsd_decode_steps = int(session.get("lsd_decode_steps", lsd_decode_steps))
-                model_tier = session.get("model", model_tier)
-                
-            elif msg_type == "text.append":
-                # Append text to buffer
+
+            if msg_type == "text.append":
                 text = data.get("text", "")
-                if text:
-                    buffer += normalize_text(text)
-                    await drain_buffer()
-                    
-            elif msg_type == "text.done":
-                # Mark that no more text is coming
-                text_done_received = True
-                logger.debug(f"WS text.done: {len(buffer)} chars remaining")
-                # Check if we can send session_ended (buffer empty after all sentences extracted)
-                await drain_buffer()
-                
-            else:
-                # ─── Legacy protocol: inline processing with sentence merging ───
-                # Short sentences (< 40 chars) are buffered and merged before
-                # generating audio. Text with odd quote count uses threshold 50.
-                # Long sentences trigger a flush, then generate alone. Connection stays alive until disconnect.
-                logger.info(f"WS legacy: first msg req_id={data.get('request_id')}")
+                if not text.strip():
+                    continue
 
-                MIN_MERGE = 40  # sentences shorter than this are buffered for merging
-                pending = []    # [{text, request_id, voice, format, speed, temperature, top_p, model}]
-                pending_len = 0
+                is_retry = data.get("retry", False)
+                entry_voice = data.get("voice", "nova")
+                entry_fmt = data.get("format", "mp3")
+                entry_speed = float(data.get("speed", default_speed))
+                entry_temperature = float(data.get("temperature", default_temperature))
+                entry_top_p = float(data.get("top_p", default_top_p))
+                entry_model = data.get("model", default_model_tier)
+                entry_request_id = data.get("request_id")
 
-                async def gen_audio(text, v, f, sp, temp, tp, mt):
-                    """Generate audio for normalized text. Returns (chunks, duration)."""
-                    gen_chunks = []
-                    t0 = time.time()
-                    async for chunk in generate_audio(
-                        text=text, voice=v, speed=sp, format=f,
-                        temperature=temp, top_p=tp,
-                        repetition_penalty=repetition_penalty,
-                        lsd_decode_steps=lsd_decode_steps, model_tier=mt,
-                    ):
-                        gen_chunks.append(chunk)
-                    gen_time = time.time() - t0
-                    total_bytes = sum(len(c) for c in gen_chunks)
-                    bps_val = _bps.get(f, 16000) / max(sp, 0.5)
-                    audio_duration = total_bytes / bps_val
-                    return gen_chunks, audio_duration, gen_time
+                normalized = normalize_text(text)
 
-                async def send_audio(chunks, audio_duration, gen_time, req_ids):
-                    """Send audio chunks and done message. Raises on send error."""
-                    nonlocal chunk_count_total, request_count
-                    for c in chunks:
-                        chunk_count_total += 1
-                        await websocket.send_bytes(c)
-                    await websocket.send_json({
-                        "status": "done",
-                        "audio_duration": round(audio_duration, 3),
-                        "gen_time": round(gen_time, 3),
-                        "request_id": req_ids,
-                    })
-                    label = f"merged {len(req_ids)}" if len(req_ids) > 1 else "single"
-                    logger.info(f"WS done: {audio_duration:.1f}s | {label} | ids={req_ids}")
-                    request_count += 1
-
-                async def flush_pending():
-                    """Generate and send audio for buffered short sentences."""
-                    nonlocal pending_len
-                    if not pending:
-                        return
-                    merged_text = " ".join(p["text"] for p in pending)
-                    merged_ids = [p["request_id"] for p in pending]
-                    # Use params from first pending item
-                    p0 = pending[0]
-                    pending.clear()
-                    pending_len = 0
+                # Retry requests get priority — flush queue, generate immediately
+                if is_retry:
+                    if flush_task and not flush_task.done():
+                        flush_task.cancel()
+                        flush_task = None
+                    await flush_merge_queue()
+                    logger.info(f"WS retry: req_id={entry_request_id} | voice={entry_voice} | '{text[:50]}'")
                     chunks, dur, gen_t = await gen_audio(
-                        merged_text, p0["voice"], p0["format"], p0["speed"],
-                        p0["temperature"], p0["top_p"], p0["model"],
+                        normalized, entry_voice, entry_fmt, entry_speed,
+                        entry_temperature, entry_top_p, entry_model,
                     )
-                    await send_audio(chunks, dur, gen_t, merged_ids)
+                    await send_audio(chunks, dur, gen_t, [entry_request_id])
+                    continue
 
-                async def process_msg(msg_data):
-                    """Process one incoming message. Returns False on send error."""
-                    nonlocal pending_len
-                    text = normalize_text(msg_data.get("input") or msg_data.get("text", ""))
-                    req_id = msg_data.get("request_id")
-                    is_retry = msg_data.get("retry", False)
+                # If voice/format changed, flush previous queue
+                if merge_queue and (
+                    merge_queue[-1]["voice"] != entry_voice or
+                    merge_queue[-1]["format"] != entry_fmt
+                ):
+                    await flush_merge_queue()
 
-                    # Read per-request params (fall back to session defaults)
-                    req_voice = msg_data.get("voice", voice)
-                    req_fmt = msg_data.get("format", fmt)
-                    req_speed = float(msg_data.get("speed", speed))
-                    req_temperature = float(msg_data.get("temperature", temperature))
-                    req_top_p = float(msg_data.get("top_p", top_p))
-                    req_model = msg_data.get("model", model_tier)
+                # Cancel existing inactivity timeout
+                if flush_task and not flush_task.done():
+                    flush_task.cancel()
+                    flush_task = None
 
-                    if not text.strip():
-                        await websocket.send_json({"error": "Empty text", "status": "error", "request_id": req_id})
-                        return True
+                merge_queue.append({
+                    "text": normalized,
+                    "request_id": entry_request_id,
+                    "voice": entry_voice,
+                    "format": entry_fmt,
+                    "speed": entry_speed,
+                    "temperature": entry_temperature,
+                    "top_p": entry_top_p,
+                    "model": entry_model,
+                })
+                merge_queue_len += len(normalized)
 
-                    # If text has odd count of double quotes, raise threshold to 50
-                    # to avoid merging an incomplete quoted segment
-                    merge_threshold = 50 if text.count('"') % 2 != 0 else MIN_MERGE
+                # Check merge threshold
+                merge_threshold = 50 if any(
+                    e["text"].count('"') % 2 != 0 for e in merge_queue
+                ) else MIN_MERGE
+                if merge_queue_len >= merge_threshold or len(merge_queue) >= 5:
+                    await flush_merge_queue()
 
-                    # Retry requests get priority — flush pending buffer, then process immediately
-                    if is_retry:
-                        await flush_pending()
-                        logger.info(f"WS retry: req_id={req_id} | voice={req_voice} | '{text[:50]}'")
-                        chunks, dur, gen_t = await gen_audio(
-                            text, req_voice, req_fmt, req_speed,
-                            req_temperature, req_top_p, req_model,
-                        )
-                        await send_audio(chunks, dur, gen_t, [req_id])
-                    elif len(text) >= merge_threshold:
-                        # Long sentence — flush buffer first, then generate alone
-                        await flush_pending()
-                        logger.info(f"WS gen: req_id={req_id} | voice={req_voice} | '{text[:50]}'")
-                        chunks, dur, gen_t = await gen_audio(
-                            text, req_voice, req_fmt, req_speed,
-                            req_temperature, req_top_p, req_model,
-                        )
-                        await send_audio(chunks, dur, gen_t, [req_id])
-                    else:
-                        # Short sentence — buffer it with params
-                        pending.append({
-                            "text": text, "request_id": req_id,
-                            "voice": req_voice, "format": req_fmt, "speed": req_speed,
-                            "temperature": req_temperature, "top_p": req_top_p, "model": req_model,
-                        })
-                        pending_len += len(text)
-                        # Use higher flush threshold if any buffered text has odd quotes
-                        flush_threshold = 50 if any(p["text"].count('"') % 2 != 0 for p in pending) else MIN_MERGE
-                        if pending_len >= flush_threshold or len(pending) >= 5:
-                            await flush_pending()
+                # Start inactivity timeout if queue is not empty
+                if merge_queue and not flush_task:
+                    flush_task = asyncio.create_task(inactivity_timeout())
 
-                    return True
+            elif msg_type == "text.done":
+                text_done_received = True
+                logger.debug(f"WS text.done: {len(merge_queue)} items in queue")
+                if flush_task and not flush_task.done():
+                    flush_task.cancel()
+                    flush_task = None
+                await flush_merge_queue()
 
-                # Process first message
-                await process_msg(data)
+            else:
+                logger.warning(f"WS unknown message type: {msg_type}")
 
-                # Process subsequent messages — connection stays alive
-                while True:
-                    try:
-                        msg = await websocket.receive_json()
-                        await process_msg(msg)
-                    except Exception as e:
-                        logger.info(f"WS handler exit: {e}")
-                        break
-
-                # Flush remaining on disconnect
-                try:
-                    await flush_pending()
-                except Exception:
-                    pass
+        # Disconnect — flush remaining
+        if flush_task and not flush_task.done():
+            flush_task.cancel()
+        await flush_merge_queue()
 
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")
     except Exception as e:
         logger.warning(f"WebSocket error: {e}")
-
 
 @app.websocket("/v1/realtime")
 async def websocket_realtime_tts(websocket: WebSocket):
@@ -733,10 +585,11 @@ async def websocket_realtime_tts(websocket: WebSocket):
                     chunk_count += 1
                     await websocket.send_bytes(chunk)
                 await websocket.send_json({"type": "response.audio.done"})
-            except (RuntimeError, Exception) as e:
+            except Exception as e:
                 if "websocket" in str(e).lower() or "closed" in str(e).lower():
                     raise
                 logger.warning(f"[Realtime] Generation error: {e}")
+                await websocket.send_json({"type": "error", "error": {"message": str(e)}})
 
         async def drain_buffer():
             nonlocal buffer
@@ -770,6 +623,11 @@ async def websocket_realtime_tts(websocket: WebSocket):
                 voice = session.get("voice", voice)
                 fmt = session.get("format", fmt)
                 speed = float(session.get("speed", speed))
+                temperature = float(session.get("temperature", temperature))
+                top_p = float(session.get("top_p", top_p))
+                repetition_penalty = float(session.get("repetition_penalty", repetition_penalty))
+                lsd_decode_steps = int(session.get("lsd_decode_steps", lsd_decode_steps))
+                model_tier = session.get("model", model_tier)
 
         # Flush remaining buffer
         if buffer.strip():
@@ -868,4 +726,4 @@ def main():
     host = settings.server_host
 
     logger.info(f"Server binding to: http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_config=log_config, access_log=True)
+    uvicorn.run(app, host=host, port=port, log_config=log_config, access_log=True, ws_ping_interval=30, ws_ping_timeout=120)

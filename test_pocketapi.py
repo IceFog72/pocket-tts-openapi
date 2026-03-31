@@ -539,18 +539,21 @@ class TestFileLikeQueueWriter:
         writer.write(b"def")
         assert writer.tell() == 6
 
-    def test_close_sends_none(self):
+    def test_close_is_noop(self):
+        # close() is intentionally a no-op — the producer's outer finally
+        # is the sole source of the EOF sentinel (prevents dual-EOF bug).
         q = Queue(maxsize=10)
         writer = FileLikeQueueWriter(q, timeout=5.0)
         writer.close()
-        assert q.get_nowait() is None
+        assert q.empty()
 
     def test_context_manager(self):
         q = Queue(maxsize=10)
         with FileLikeQueueWriter(q) as writer:
             writer.write(b"data")
         assert q.get_nowait() == b"data"
-        assert q.get_nowait() is None
+        # close() is a no-op; EOF sentinel comes from producer's outer finally
+        assert q.empty()
 
     def test_write_raises_on_abort(self):
         q = Queue(maxsize=1)
@@ -951,20 +954,25 @@ class TestExportVoiceEndpoint:
 class TestCachingIntegration:
     """Test caching behavior end-to-end."""
 
-    @patch('os.path.exists')
-    @patch('pocket_tts_server.audio.open_file', new_callable=AsyncMock)
-    def test_cache_hit_returns_cached(self, mock_open, mock_exists):
-        mock_exists.return_value = True
+    @patch('pocket_tts_server.audio.cache_manager')
+    @patch('pocket_tts_server.audio.os.path.getsize')
+    @patch('pocket_tts_server.audio.open_file')
+    def test_cache_hit_returns_cached(self, mock_open_file, mock_getsize, mock_cache_mgr):
+        mock_cache_mgr.check_cache.return_value = True
+        mock_cache_mgr.generate_cache_key.return_value = "test_hash"
+        mock_cache_mgr.get_cache_path.return_value = ("/tmp/test.wav", "/tmp/test.json")
+        mock_getsize.return_value = 12
         mock_file = AsyncMock()
         mock_file.read.side_effect = [b"cached_audio", b""]
-        mock_open.return_value.__aenter__.return_value = mock_file
+        mock_open_file.return_value.__aenter__ = AsyncMock(return_value=mock_file)
+        mock_open_file.return_value.__aexit__ = AsyncMock(return_value=False)
 
         from pocket_tts_server.audio import generate_audio
         import asyncio
 
         async def run_gen():
             chunks = []
-            async for chunk in generate_audio(text="Cached text", voice="alloy"):
+            async for chunk in generate_audio(text="Cached_text", voice="alloy"):
                 chunks.append(chunk)
             return b"".join(chunks)
 

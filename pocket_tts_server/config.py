@@ -99,7 +99,7 @@ class Settings(BaseSettings):
 
     # Streaming settings
     chunk_size: int = _ini.get("chunk_size", 8192)
-    eof_timeout: int = _ini.get("eof_timeout", 30)
+    eof_timeout: float = _ini.get("eof_timeout", 30.0)
     queue_size: int = _ini.get("queue_size", 200)
 
     # Security settings

@@ -73,13 +73,9 @@ class FileLikeQueueWriter:
         pass
 
     def close(self) -> None:
-        try:
-            self.queue.put(None, timeout=settings.eof_timeout)
-        except (Full, Exception):
-            try:
-                self.queue.put_nowait(None)
-            except Full:
-                pass
+        # Don't put EOF here — the producer's outer finally block handles it.
+        # Putting None here causes a dual EOF sentinel bug.
+        pass
 
     def __enter__(self):
         return self
@@ -182,10 +178,12 @@ async def _stream_queue_chunks(queue: Queue) -> AsyncIterator[bytes]:
     while True:
         try:
             chunk = await asyncio.to_thread(queue.get, timeout=5.0)
-        except Exception:
+        except Empty:
             if getattr(queue, "abort", False):
                 break
             continue
+        except Exception:
+            break
         if chunk is None:
             break
         yield chunk
@@ -395,44 +393,54 @@ async def generate_audio(
         temp_path = f"{cache_path}.{uuid.uuid4().hex}.tmp"
 
     try:
-        async with await open_file(temp_path, "wb") as cache_file:
+        if skip_cache:
+            # No caching — stream directly
             async for chunk in _generate_audio_core(
                 text, voice_name, speed, format, chunk_size,
-                temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier
+                temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier,
             ):
-                await cache_file.write(chunk)
                 yield chunk
+        else:
+            async with await open_file(temp_path, "wb") as cache_file:
+                async for chunk in _generate_audio_core(
+                    text, voice_name, speed, format, chunk_size,
+                    temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier,
+                ):
+                    await cache_file.write(chunk)
+                    yield chunk
 
-        if os.path.exists(temp_path):
-            os.replace(temp_path, cache_path)
+            if os.path.exists(temp_path):
+                os.replace(temp_path, cache_path)
 
-            metadata = {
-                "text": text, "voice": voice_name, "speed": speed,
-                "format": format, "hash": cache_hash, "model": model_tier,
-                "created_at": time.time()
-            }
-            try:
-                async with await open_file(meta_path, "w") as f:
-                    await f.write(json.dumps(metadata, indent=2))
-            except (IOError, OSError) as e:
-                logger.warning(f"Failed to save metadata: {e}")
+                metadata = {
+                    "text": text, "voice": voice_name, "speed": speed,
+                    "format": format, "hash": cache_hash, "model": model_tier,
+                    "created_at": time.time()
+                }
+                try:
+                    async with await open_file(meta_path, "w") as f:
+                        await f.write(json.dumps(metadata, indent=2))
+                except (IOError, OSError) as e:
+                    logger.warning(f"Failed to save metadata: {e}")
 
-            if background_tasks and cache_manager.should_cleanup():
-                background_tasks.add_task(cache_manager.cleanup)
+                if background_tasks and cache_manager.should_cleanup():
+                    background_tasks.add_task(cache_manager.cleanup)
 
     except (IOError, OSError, RuntimeError) as e:
-        for path in [temp_path, meta_path, cache_path]:
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+        if not skip_cache:
+            for path in [temp_path, meta_path, cache_path]:
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
         raise HTTPException(status_code=500, detail=f"Audio generation failed: {str(e)}")
     except (Exception, asyncio.CancelledError) as e:
-        for path in [temp_path, meta_path, cache_path]:
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+        if not skip_cache:
+            for path in [temp_path, meta_path, cache_path]:
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
         raise
