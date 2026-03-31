@@ -31,7 +31,7 @@ TEST_TEXT = (
 async def test_streaming(url: str, text: str, fmt: str = "wav"):
     """Connect to WS, send text, log when each chunk arrives."""
 
-    print(f"Connecting to {url}...")
+    print(f"Connecting to {url}")
     print(f"Format: {fmt}")
     print(f"Text: {len(text)} chars, ~{len(text.split())} words")
     print(f"Sentences: {len([s for s in text.replace('!', '.').replace('?', '.').split('.') if s.strip()])}")

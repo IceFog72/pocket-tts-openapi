@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .audio import generate_audio
 from .cache import cache_manager
@@ -21,6 +21,7 @@ from .model_manager import model_manager
 from .models import ExportVoiceRequest, SpeechRequest
 from .rate_limiter import rate_limiter
 from .validation import _ffmpeg_available, check_ffmpeg, is_valid_voice_name, normalize_text
+from .voices import voice_lock
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -140,10 +141,9 @@ async def rate_limit_middleware(request: Request, call_next):
 
     is_allowed, retry_after = rate_limiter.is_allowed(client_ip)
     if not is_allowed:
-        return StreamingResponse(
-            content=iter([json.dumps({"error": "Rate limit exceeded", "retry_after": retry_after}).encode()]),
+        return JSONResponse(
+            content={"error": "Rate limit exceeded", "retry_after": retry_after},
             status_code=429,
-            media_type="application/json",
             headers={"Retry-After": str(retry_after)}
         )
 
@@ -153,16 +153,18 @@ async def rate_limit_middleware(request: Request, call_next):
 
 @app.get("/v1/voices")
 async def get_voices():
-    voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
-    voices.update(VOICE_MAPPING.keys())
+    with voice_lock:
+        voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
+        voices.update(VOICE_MAPPING.keys())
     return {"voices": sorted(list(voices))}
 
 
 @app.get("/speakers")
 async def get_speakers():
     """XTTS-compatible voice list endpoint (returns objects with name and voice_id)."""
-    voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
-    voices.update(VOICE_MAPPING.keys())
+    with voice_lock:
+        voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
+        voices.update(VOICE_MAPPING.keys())
     return [{"name": v, "voice_id": v} for v in sorted(voices)]
 
 
@@ -174,10 +176,11 @@ async def get_formats():
 @app.post("/v1/audio/speech")
 async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks) -> StreamingResponse:
     try:
-        data.input = normalize_text(data.input)
         logger.info(f"TTS request: voice='{data.voice}', format='{data.response_format}', len={len(data.input)}")
 
-        if not is_valid_voice_name(data.voice) and data.voice.lower() not in VOICE_MAPPING and data.voice not in VOICE_MAPPING:
+        v = data.voice
+        is_path_voice = os.path.isabs(v) and os.path.isfile(v)
+        if not is_path_voice and not is_valid_voice_name(v) and v.lower() not in VOICE_MAPPING and v not in VOICE_MAPPING:
             raise HTTPException(status_code=400, detail="Invalid voice name")
 
         return StreamingResponse(
@@ -316,7 +319,8 @@ async def websocket_tts(websocket: WebSocket):
         return
 
     # Bytes per second estimates for duration calculation
-    _bps = {"wav": 48000, "mp3": 16000, "opus": 8000, "aac": 16000, "flac": 32000, "pcm": 48000}
+    # wav/pcm: 24kHz * 2 bytes = 48000 B/s; mp3: ~220kbps VBR (-q:a 0); opus/aac: 192k CBR (-b:a 192k)
+    _bps = {"wav": 48000, "mp3": 27500, "opus": 24000, "aac": 24000, "flac": 32000, "pcm": 48000}
 
     try:
         # Merge queue — accumulates short sentences, flushed on threshold or text.done
@@ -331,6 +335,8 @@ async def websocket_tts(websocket: WebSocket):
         session_ended_sent = False
         flush_task = None
         last_text_time = time.time()
+        merge_lock = asyncio.Lock()
+        inflight_gens = 0  # number of in-flight audio generations (flush in progress)
 
         # Defaults for optional per-append params
         default_speed = 1.0
@@ -341,14 +347,15 @@ async def websocket_tts(websocket: WebSocket):
         default_model_tier = settings.model_tier
 
         async def try_send_session_ended():
-            """Send session_ended exactly once when all text is processed."""
+            """Send session_ended exactly once when all text is processed and no audio is in-flight."""
             nonlocal session_ended_sent
-            if session_ended_sent:
-                return
-            if text_done_received and not merge_queue:
-                session_ended_sent = True
-                logger.debug("WS session ended")
-                await websocket.send_json({"status": "session_ended"})
+            async with merge_lock:
+                if session_ended_sent:
+                    return
+                if text_done_received and not merge_queue and inflight_gens == 0:
+                    session_ended_sent = True
+                    logger.debug("WS session ended")
+                    await websocket.send_json({"status": "session_ended"})
 
         async def gen_audio(text, v, f, sp, temp, tp, mt):
             """Generate audio for normalized text. Returns (chunks, duration, gen_time)."""
@@ -389,34 +396,40 @@ async def websocket_tts(websocket: WebSocket):
 
         async def flush_merge_queue():
             """Generate and send audio for buffered short sentences."""
-            nonlocal merge_queue_len
-            if not merge_queue:
-                return
-            # Group by params — items with different params must be generated separately
-            groups = {}
-            for entry in merge_queue:
-                key = (entry["voice"], entry["format"], entry["speed"],
-                       entry["temperature"], entry["top_p"], entry["model"])
-                groups.setdefault(key, []).append(entry)
-            merge_queue.clear()
-            merge_queue_len = 0
-            for (v, f, sp, temp, tp, mt), items in groups.items():
-                merged_text = "\n".join(e["text"] for e in items)
-                merged_ids = [e["request_id"] for e in items]
-                try:
-                    chunks, dur, gen_t = await gen_audio(merged_text, v, f, sp, temp, tp, mt)
-                    await send_audio(chunks, dur, gen_t, merged_ids)
-                except Exception:
-                    for rid in merged_ids:
-                        try:
-                            await websocket.send_json({
-                                "error": "Generation failed", "status": "error",
-                                "request_id": rid,
-                            })
-                        except Exception:
-                            break
-                    raise
-            await try_send_session_ended()
+            nonlocal merge_queue_len, inflight_gens
+            async with merge_lock:
+                if not merge_queue:
+                    return
+                # Group by params — items with different params must be generated separately
+                groups = {}
+                for entry in merge_queue:
+                    key = (entry["voice"], entry["format"], entry["speed"],
+                           entry["temperature"], entry["top_p"], entry["model"])
+                    groups.setdefault(key, []).append(entry)
+                merge_queue.clear()
+                merge_queue_len = 0
+                inflight_gens += 1
+            try:
+                for (v, f, sp, temp, tp, mt), items in groups.items():
+                    merged_text = "\n".join(e["text"] for e in items)
+                    merged_ids = [e["request_id"] for e in items]
+                    try:
+                        chunks, dur, gen_t = await gen_audio(merged_text, v, f, sp, temp, tp, mt)
+                        await send_audio(chunks, dur, gen_t, merged_ids)
+                    except Exception:
+                        for rid in merged_ids:
+                            try:
+                                await websocket.send_json({
+                                    "error": "Generation failed", "status": "error",
+                                    "request_id": rid,
+                                })
+                            except Exception:
+                                break
+                        raise
+            finally:
+                async with merge_lock:
+                    inflight_gens -= 1
+                await try_send_session_ended()
 
         async def inactivity_timeout():
             """Flush merge queue after inactivity timeout (adaptive)."""
@@ -439,6 +452,8 @@ async def websocket_tts(websocket: WebSocket):
         while True:
             try:
                 data = await websocket.receive_json()
+            except WebSocketDisconnect:
+                break
             except Exception:
                 break
 
@@ -606,6 +621,8 @@ async def websocket_realtime_tts(websocket: WebSocket):
         while True:
             try:
                 data = await websocket.receive_json()
+            except WebSocketDisconnect:
+                break
             except Exception:
                 break
 
@@ -704,8 +721,9 @@ async def xtts_set_settings(request: Request):
 @app.get("/v1/audio/speech/speakers")
 async def xtts_speakers_nested():
     """Voice list at nested path (for misconfigured endpoints)."""
-    voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
-    voices.update(VOICE_MAPPING.keys())
+    with voice_lock:
+        voices = set(DEFAULT_VOICES["openai_aliases"] + DEFAULT_VOICES["pocket_tts"])
+        voices.update(VOICE_MAPPING.keys())
     return [{"name": v, "voice_id": v} for v in sorted(voices)]
 
 

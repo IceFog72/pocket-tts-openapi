@@ -38,6 +38,7 @@ from .config import settings
 from .constants import CACHE_EXTENSIONS, FFMPEG_FORMATS, MEDIA_TYPES, VOICE_MAPPING
 from .model_manager import model_manager
 from .validation import _ffmpeg_available, is_valid_voice_name, sanitize_text_input
+from .voices import voice_lock
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ async def _stream_queue_chunks(queue: Queue) -> AsyncIterator[bytes]:
         yield chunk
 
 
-def _start_ffmpeg_process(format: str, speed: float = 1.0) -> Tuple[subprocess.Popen, int, int]:
+def _start_ffmpeg_process(format: str, speed: float = 1.0) -> Tuple[subprocess.Popen, int]:
     out_fmt, codec = FFMPEG_FORMATS.get(format, ("wav", "pcm_s16le"))
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "wav", "-i", "pipe:0"]
 
@@ -214,13 +215,13 @@ def _start_ffmpeg_process(format: str, speed: float = 1.0) -> Tuple[subprocess.P
     r_fd, w_fd = os.pipe()
     r_file = os.fdopen(r_fd, "rb")
     try:
-        proc = subprocess.Popen(cmd, stdin=r_file, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdin=r_file, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception:
         r_file.close()
         os.close(w_fd)
         raise
     r_file.close()
-    return proc, w_fd, r_fd
+    return proc, w_fd
 
 
 def _start_pipe_writer(queue: Queue, write_fd: int) -> threading.Thread:
@@ -277,7 +278,7 @@ async def _generate_audio_core(
             return
 
         if format in FFMPEG_FORMATS or (format in ("wav", "pcm") and speed != 1.0):
-            ffmpeg_proc, write_fd, _ = _start_ffmpeg_process(format, speed)
+            ffmpeg_proc, write_fd = _start_ffmpeg_process(format, speed)
             proc = ffmpeg_proc
             writer_thread = _start_pipe_writer(queue, write_fd)
 
@@ -306,6 +307,11 @@ async def _generate_audio_core(
                         pass
                     if proc.stderr:
                         try:
+                            stderr_data = proc.stderr.read()  # type: ignore[union-attr]
+                            if stderr_data:
+                                stderr_text = stderr_data.decode("utf-8", errors="replace").strip()
+                                if stderr_text:
+                                    logger.warning(f"FFmpeg stderr: {stderr_text}")
                             proc.stderr.close()  # type: ignore[union-attr]
                         except Exception:
                             pass
@@ -352,14 +358,15 @@ async def generate_audio(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if not is_valid_voice_name(voice) and voice not in VOICE_MAPPING:
+    if not is_valid_voice_name(voice) and voice not in VOICE_MAPPING and not (os.path.isabs(voice) and os.path.isfile(voice)):
         raise HTTPException(status_code=400, detail="Invalid voice name")
 
     v_lower = voice.lower()
-    if v_lower in VOICE_MAPPING:
-        voice_name = VOICE_MAPPING[v_lower]
-    else:
-        voice_name = VOICE_MAPPING.get(voice, voice)
+    with voice_lock:
+        if v_lower in VOICE_MAPPING:
+            voice_name = VOICE_MAPPING[v_lower]
+        else:
+            voice_name = VOICE_MAPPING.get(voice, voice)
 
     # Skip caching for WebSocket streaming or when explicitly requested
     if skip_cache:
@@ -379,7 +386,7 @@ async def generate_audio(
 
         if cache_manager.check_cache(cache_path):
             try:
-                logger.info(f"Cache hit: {text[:60]}... ({os.path.getsize(cache_path)} bytes)")
+                logger.info(f"Cache hit: {text} ({os.path.getsize(cache_path)} bytes)")
                 async with await open_file(cache_path, "rb") as f:
                     while True:
                         chunk = await f.read(chunk_size)

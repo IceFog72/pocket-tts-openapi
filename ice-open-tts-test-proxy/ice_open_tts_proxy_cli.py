@@ -181,7 +181,7 @@ def generate_speech(text: str, voice: str, speed: float, format: str,
         "speed": speed
     }
 
-    print(f"Generating speech (voice={voice}, format={format})...")
+    print(f"Generating speech (voice={voice}, format={format})")
     log.info(f"Generate speech: voice={voice}, speed={speed}, format={format}, text_len={len(text)}")
 
     try:
@@ -209,7 +209,7 @@ def speak(text: str, voice: str, speed: float, proxy_url: str):
     """Send text to proxy for playback."""
     log = logging.getLogger("tts_proxy_cli")
     payload = {"text": text, "voice": voice, "speed": speed}
-    log.info(f"Speak: voice={voice}, speed={speed}, text='{text[:50]}...'")
+    log.info(f"Speak: voice={voice}, speed={speed}, text='{text}'")
 
     try:
         resp = requests.post(f"{proxy_url}/speak", json=payload, timeout=30)
@@ -280,7 +280,7 @@ def run_server(tts_url: str, host: str, port: int, feed_queue: Optional[queue.Qu
                 'timestamp': time.time()
             })
         
-        return jsonify({"status": "success", "message": f"Playing: {text[:50]}..."})
+        return jsonify({"status": "success", "message": f"Playing: {text}"})
     
     @app.route('/voices')
     def voices():

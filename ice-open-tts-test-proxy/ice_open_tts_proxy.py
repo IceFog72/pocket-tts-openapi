@@ -271,7 +271,7 @@ class OpenAITTSStreamingManager:
             initial_serial = self.request_serial
             
         log = logging.getLogger("tts_proxy.stream")
-        log.info(f"Streaming chunk: '{text[:50]}...' (length: {len(text)})")
+        log.info(f"Streaming chunk: '{text}' (length: {len(text)})")
         try:
             payload = {
                 "input": text,
@@ -615,10 +615,10 @@ class APIServer:
                 log.warning("Speak request with empty text")
                 return jsonify({"error": "No text provided"}), 400
 
-            log.info(f"Speak request: voice={voice}, speed={speed}, text='{text[:50]}...'")
+            log.info(f"Speak request: voice={voice}, speed={speed}, text='{text}'")
             audio_data = self.tts_client.generate_speech(text, voice, speed, format)
             if audio_data is None:
-                log.error(f"Failed to generate speech for text='{text[:50]}...'")
+                log.error(f"Failed to generate speech for text='{text}'")
                 return jsonify({"error": "Failed to generate speech"}), 500
 
             # Log to feed queue if available
@@ -634,7 +634,7 @@ class APIServer:
 
             self.audio_player.play(audio_data)
             log.info(f"Playing audio: {len(audio_data)} bytes")
-            return jsonify({"status": "success", "message": f"Playing: {text[:50]}..."})
+            return jsonify({"status": "success", "message": f"Playing: {text}"})
 
         @self.flask_app.route('/voices', methods=['GET'])
         def voices():
@@ -653,7 +653,7 @@ class APIServer:
             if not text:
                 return jsonify({"error": "No input text"}), 400
 
-            log.info(f"OpenAI TTS: voice={voice}, speed={speed}, stream={stream}, text='{text[:50]}...'")
+            log.info(f"OpenAI TTS: voice={voice}, speed={speed}, stream={stream}, text='{text}'")
 
             # Generate audio from TTS server
             payload = {"input": text, "voice": voice, "response_format": fmt, "speed": speed}
@@ -1035,7 +1035,7 @@ class TTSApp:
                 new_chunk = current_text[self.last_live_text_len:]
                 self.live_tts_manager.add_text(new_chunk)
                 self.last_live_text_len = len(current_text)
-                self.playing_label.config(text=f"Live: {new_chunk.strip()[:30]}...")
+                self.playing_label.config(text=f"Live: {new_chunk.strip()}")
     
     def _on_paste(self, event=None):
         """Handle paste events for live mode."""
@@ -1055,7 +1055,7 @@ class TTSApp:
             new_chunk = current_text[self.last_live_text_len:]
             self.live_tts_manager.add_text(new_chunk)
             self.last_live_text_len = len(current_text)
-            self.playing_label.config(text=f"Live (Pasted): {new_chunk.strip()[:30]}...")
+            self.playing_label.config(text=f"Live (Pasted): {new_chunk.strip()}")
         else:
             self.last_live_text_len = len(current_text)
 
@@ -1417,7 +1417,7 @@ def main():
                 log.warning("Speak request with empty text")
                 return jsonify({"error": "No text"}), 400
 
-            log.info(f"Speak request: voice={voice}, speed={speed}, text='{text[:50]}...'")
+            log.info(f"Speak request: voice={voice}, speed={speed}, text='{text}'")
 
             # Generate audio via TTS server
             payload = {"input": text, "voice": voice, "response_format": fmt, "speed": speed}
@@ -1448,7 +1448,7 @@ def main():
                 except Exception as e:
                     log.warning(f"Audio playback failed: {e}")
 
-                return jsonify({"status": "success", "message": f"Playing: {text[:50]}...", "file": temp_path})
+                return jsonify({"status": "success", "message": f"Playing: {text}", "file": temp_path})
             except Exception as e:
                 log.error(f"Speak error: {e}")
                 return jsonify({"error": str(e)}), 500

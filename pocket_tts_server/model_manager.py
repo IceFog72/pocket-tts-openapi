@@ -124,9 +124,10 @@ def _slice_kv_cache(self, model_state: dict, sequence_length: int) -> None:
         if "cache" in module_state:
             cache = module_state["cache"]
             if cache.shape[2] > sequence_length:
-                module_state["cache"] = cache[:, :, :sequence_length, :, :].contiguous()
-            elif cache.shape[3] > sequence_length:
-                module_state["cache"] = cache[:, :, :, :sequence_length, :].contiguous()
+                cache = cache[:, :, :sequence_length, :, :].contiguous()
+            if cache.shape[3] > sequence_length:
+                cache = cache[:, :, :, :sequence_length, :].contiguous()
+            module_state["cache"] = cache
 
 
 model_manager = ModelManager()

@@ -1,6 +1,7 @@
 """Voice loading and management."""
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Set
 
@@ -14,6 +15,8 @@ from .model_manager import model_manager
 
 logger = logging.getLogger(__name__)
 
+voice_lock = threading.Lock()
+
 
 def load_custom_voices() -> Set[str]:
     custom_voices: Set[str] = set()
@@ -24,7 +27,8 @@ def load_custom_voices() -> Set[str]:
         for f in embeddings_path.iterdir():
             if f.suffix.lower() == ".safetensors":
                 voice_name = f.stem
-                VOICE_MAPPING[voice_name] = str(f.resolve())
+                with voice_lock:
+                    VOICE_MAPPING[voice_name] = str(f.resolve())
                 custom_voices.add(voice_name)
 
     voices_path = Path(settings.voices_dir)
@@ -49,14 +53,17 @@ def load_custom_voices() -> Set[str]:
                                 prompt = tts_model._encode_audio(audio_resampled.unsqueeze(0).to(tts_model.device))
                             safetensors.torch.save_file({"audio_prompt": prompt.cpu()}, str(st_path))
                             logger.info(f"Exported '{voice_name}' to {st_path}")
-                            VOICE_MAPPING[voice_name] = str(st_path.resolve())
+                            with voice_lock:
+                                VOICE_MAPPING[voice_name] = str(st_path.resolve())
                             custom_voices.add(voice_name)
                         except Exception as e:
                             logger.warning(f"Failed to auto-export voice '{voice_name}': {e}")
-                            VOICE_MAPPING[voice_name] = str(f.resolve())
+                            with voice_lock:
+                                VOICE_MAPPING[voice_name] = str(f.resolve())
                             custom_voices.add(voice_name)
                     else:
-                        VOICE_MAPPING[voice_name] = str(f.resolve())
+                        with voice_lock:
+                            VOICE_MAPPING[voice_name] = str(f.resolve())
                         custom_voices.add(voice_name)
 
     logger.info(f"{Colors.CYAN}{Colors.BOLD}Default voices available:{Colors.RESET}")
