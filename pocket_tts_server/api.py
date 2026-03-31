@@ -180,8 +180,11 @@ async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks)
 
         v = data.voice
         is_path_voice = os.path.isabs(v) and os.path.isfile(v)
-        if not is_path_voice and not is_valid_voice_name(v) and v.lower() not in VOICE_MAPPING and v not in VOICE_MAPPING:
-            raise HTTPException(status_code=400, detail="Invalid voice name")
+        if not is_path_voice:
+            with voice_lock:
+                known = is_valid_voice_name(v) or v.lower() in VOICE_MAPPING or v in VOICE_MAPPING
+            if not known:
+                raise HTTPException(status_code=400, detail="Invalid voice name")
 
         return StreamingResponse(
             generate_audio(
@@ -272,6 +275,7 @@ async def export_voice(request: ExportVoiceRequest):
 async def health():
     return {
         "status": "ok",
+        "version": app.version,
         "model_loaded": model_manager.is_loaded,
         "device": model_manager.device,
         "sample_rate": model_manager.sample_rate,

@@ -321,8 +321,6 @@ async def _generate_audio_core(
                     await asyncio.to_thread(writer_thread.join)
             return
 
-        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
-
     except Exception as e:
         logger.exception(f"Error streaming audio format {format}: {e}")
         raise
@@ -386,7 +384,7 @@ async def generate_audio(
 
         if cache_manager.check_cache(cache_path):
             try:
-                logger.info(f"Cache hit: {text} ({os.path.getsize(cache_path)} bytes)")
+                logger.info(f"Cache hit: {text[:80]}{'...' if len(text) > 80 else ''} ({os.path.getsize(cache_path)} bytes)")
                 async with await open_file(cache_path, "rb") as f:
                     while True:
                         chunk = await f.read(chunk_size)
