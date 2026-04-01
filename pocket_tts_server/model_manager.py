@@ -4,6 +4,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+import torch
+
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -109,10 +111,12 @@ class ModelManager:
         with self._lock:
             if self._model is None:
                 return
-            if self._device != target_device:
-                logger.info(f"Moving model from {self._device} to {target_device}")
-                self._model.to(target_device)
-                self._device = target_device
+                if self._device != target_device:
+                    logger.info(f"Moving model from {self._device} to {target_device}")
+                    self._model.to(target_device)
+                    self._device = target_device
+                    if target_device == "cpu":
+                        torch.cuda.empty_cache()
 
     def shutdown(self) -> None:
         with self._lock:
