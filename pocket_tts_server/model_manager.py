@@ -47,10 +47,12 @@ class ModelManager:
     def load(self, timeout: int = settings.model_load_timeout) -> None:
         from pocket_tts import TTSModel
 
-        with self._lock:
+        self._lock.acquire()
+        try:
             if self._model is not None:
                 return
             if self._loading:
+                # Another thread is loading — wait outside the lock
                 self._lock.release()
                 try:
                     if not self._load_event.wait(timeout=timeout):
@@ -60,6 +62,8 @@ class ModelManager:
                 return
             self._loading = True
             self._load_event.clear()
+        finally:
+            self._lock.release()
 
         try:
             logger.info(f"Loading TTS model (timeout: {timeout}s)...")

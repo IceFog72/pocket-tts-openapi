@@ -178,7 +178,7 @@ echo ""
 echo "Activating virtual environment..."
 source venv/bin/activate
 
-export OVERRIDE_PORT=$DEFAULT_PORT
+export OVERRIDE_PORT=${OVERRIDE_PORT:-$DEFAULT_PORT}
 
 echo "Starting Pocket TTS API..."
 echo "Please check the log below for the actual PORT."

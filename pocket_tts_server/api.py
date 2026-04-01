@@ -235,30 +235,33 @@ async def export_voice(request: ExportVoiceRequest):
             raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' (WAV) not found in {settings.voices_dir}")
 
     try:
-        audio, sr = sf.read(wav_path)
-        audio_pt = torch.from_numpy(audio).float()
-        if len(audio_pt.shape) == 1:
-            audio_pt = audio_pt.unsqueeze(0)
-        if request.truncate:
-            max_samples = int(30 * sr)
-            if audio_pt.shape[-1] > max_samples:
-                audio_pt = audio_pt[..., :max_samples]
+        def _export():
+            audio, sr = sf.read(wav_path)
+            audio_pt = torch.from_numpy(audio).float()
+            if len(audio_pt.shape) == 1:
+                audio_pt = audio_pt.unsqueeze(0)
+            if request.truncate:
+                max_samples = int(30 * sr)
+                if audio_pt.shape[-1] > max_samples:
+                    audio_pt = audio_pt[..., :max_samples]
 
-        audio_resampled = convert_audio(audio_pt, sr, model_manager.sample_rate, 1)
+            audio_resampled = convert_audio(audio_pt, sr, model_manager.sample_rate, 1)
 
-        model_manager.acquire_lock()
-        try:
-            tts_model = model_manager.model
-            if tts_model is None:
-                raise RuntimeError("Model not loaded")
-            with torch.no_grad():
-                tts_model.temp = request.temperature
-                tts_model.lsd_decode_steps = request.lsd_decode_steps
-                prompt = tts_model._encode_audio(audio_resampled.unsqueeze(0).to(tts_model.device))
-        finally:
-            model_manager.release_lock()
+            model_manager.acquire_lock()
+            try:
+                tts_model = model_manager.model
+                if tts_model is None:
+                    raise RuntimeError("Model not loaded")
+                with torch.no_grad():
+                    tts_model.temp = request.temperature
+                    tts_model.lsd_decode_steps = request.lsd_decode_steps
+                    prompt = tts_model._encode_audio(audio_resampled.unsqueeze(0).to(tts_model.device))
+            finally:
+                model_manager.release_lock()
 
-        safetensors.torch.save_file({"audio_prompt": prompt.cpu()}, st_path)
+            safetensors.torch.save_file({"audio_prompt": prompt.cpu()}, st_path)
+
+        await asyncio.to_thread(_export)
         await asyncio.to_thread(load_custom_voices)
 
         return {"status": "success", "message": f"Exported {voice_name} to safetensors", "path": st_path}
