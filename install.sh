@@ -13,7 +13,7 @@ python -m pip install --upgrade pip
 read -p "Do you want to install PyTorch with CUDA support? (y/n): " install_cuda
 if [[ "$install_cuda" =~ ^[Yy]$ ]]; then
     echo "Installing PyTorch with CUDA support..."
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 else
     echo "Proceeding with default PyTorch installation..."
 fi
