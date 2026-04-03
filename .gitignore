@@ -38,3 +38,6 @@ server.log
 node_modules/
 test_streaming.js
 server.log
+test_pocketapi.py
+test_websocket.py
+test_ws_streaming.py

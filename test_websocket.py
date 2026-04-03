@@ -5,7 +5,6 @@ import json
 import sys
 import websockets
 
-
 async def test_websocket(url: str = "ws://localhost:8005/v1/audio/stream"):
     """Connect to TTS WebSocket and stream audio."""
     print(f"Connecting to {url}")

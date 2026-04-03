@@ -103,7 +103,6 @@ class TestConstants:
         assert hasattr(Colors, 'RESET')
         assert hasattr(Colors, 'BOLD')
 
-
 # ============================================================================
 # SpeechRequest Model Tests
 # ============================================================================
