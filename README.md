@@ -151,7 +151,7 @@ See **[AGENTS.md](ice-open-tts-test-proxy/AGENTS.md)** for detailed AI Agent int
 
 #### Setup Authentication
 1. Accept license at https://huggingface.co/kyutai/pocket-tts
-2. Login: `huggingface-cli login`
+2. Login: https://huggingface.co/docs/huggingface_hub/guides/cli
 3. Restart the server
 
 ### Audio Quality & Performance
@@ -167,7 +167,7 @@ See **[AGENTS.md](ice-open-tts-test-proxy/AGENTS.md)** for detailed AI Agent int
 
 ## Troubleshooting
 
-- **401 Unauthorized** → Run `huggingface-cli login`
+- **401 Unauthorized** → https://huggingface.co/docs/huggingface_hub/guides/cli
 - **Port conflict** → Server auto-selects next free port
 - **Slow first run** → Downloads ~236MB model
 
