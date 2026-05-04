@@ -151,6 +151,26 @@ async def rate_limit_middleware(request: Request, call_next):
     return response
 
 
+@app.get("/v1/models")
+@app.get("/models")
+async def list_models():
+    """List available TTS models (languages with CPU/GPU variants)."""
+    try:
+        from pocket_tts.models.tts_model import CONFIGS_DIR
+        known_languages = [f.stem for f in CONFIGS_DIR.glob("*.yaml")]
+    except Exception:
+        known_languages = [
+            "english", "french_24l", "german_24l", "spanish_24l",
+            "portuguese_24l", "italian_24l"
+        ]
+        
+    models = []
+    created_time = int(time.time())
+    for lang in sorted(known_languages):
+        models.append({"id": f"{lang}-cpu", "object": "model", "created": created_time, "owned_by": "pocket-tts"})
+        models.append({"id": f"{lang}-gpu", "object": "model", "created": created_time, "owned_by": "pocket-tts"})
+    return {"object": "list", "data": models}
+
 @app.get("/v1/voices")
 async def get_voices():
     with voice_lock:
@@ -212,9 +232,7 @@ async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks)
 @app.post("/v1/audio/export-voice")
 async def export_voice(request: ExportVoiceRequest):
     import torch
-    import soundfile as sf
-    import safetensors.torch
-    from pocket_tts.data.audio_utils import convert_audio
+    from pocket_tts import export_model_state
     from .voices import load_custom_voices
 
     if not model_manager.is_loaded:
@@ -236,17 +254,6 @@ async def export_voice(request: ExportVoiceRequest):
 
     try:
         def _export():
-            audio, sr = sf.read(wav_path)
-            audio_pt = torch.from_numpy(audio).float()
-            if len(audio_pt.shape) == 1:
-                audio_pt = audio_pt.unsqueeze(0)
-            if request.truncate:
-                max_samples = int(30 * sr)
-                if audio_pt.shape[-1] > max_samples:
-                    audio_pt = audio_pt[..., :max_samples]
-
-            audio_resampled = convert_audio(audio_pt, sr, model_manager.sample_rate, 1)
-
             model_manager.acquire_lock()
             try:
                 tts_model = model_manager.model
@@ -255,11 +262,11 @@ async def export_voice(request: ExportVoiceRequest):
                 with torch.no_grad():
                     tts_model.temp = request.temperature
                     tts_model.lsd_decode_steps = request.lsd_decode_steps
-                    prompt = tts_model._encode_audio(audio_resampled.unsqueeze(0).to(tts_model.device))
+                    model_state = tts_model.get_state_for_audio_prompt(wav_path, truncate=request.truncate)
             finally:
                 model_manager.release_lock()
 
-            safetensors.torch.save_file({"audio_prompt": prompt.cpu()}, st_path)
+            export_model_state(model_state, st_path)
 
         await asyncio.to_thread(_export)
         await asyncio.to_thread(load_custom_voices)
@@ -280,7 +287,7 @@ async def health():
         "status": "ok",
         "version": app.version,
         "model_loaded": model_manager.is_loaded,
-        "device": model_manager.device,
+        "device": str(model_manager.device) if model_manager.device else None,
         "sample_rate": model_manager.sample_rate,
         "voice_cloning": has_voice_cloning(),
         "hf_authenticated": check_hf_auth(),

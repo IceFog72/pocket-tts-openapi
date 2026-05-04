@@ -22,15 +22,12 @@ def _safe_wave_close(self):
         pass  # Client disconnected during header patch — ignore
 wave.Wave_write.close = _safe_wave_close
 
-import numpy as np
-import soundfile as sf
 import torch
 from anyio import open_file
 from fastapi import BackgroundTasks, HTTPException
 
 import safetensors.torch
 from pocket_tts.data.audio import stream_audio_chunks
-from pocket_tts.data.audio_utils import convert_audio
 from pocket_tts.modules.stateful_module import init_states
 
 from .cache import cache_manager
@@ -41,6 +38,41 @@ from .validation import _ffmpeg_available, is_valid_voice_name, sanitize_text_in
 from .voices import voice_lock
 
 logger = logging.getLogger(__name__)
+
+
+def _is_legacy_safetensors(path: str) -> bool:
+    """Check if a safetensors file uses the old {"audio_prompt": ...} format."""
+    try:
+        with safetensors.safe_open(path, framework="pt") as f:
+            keys = list(f.keys())
+        return "audio_prompt" in keys and not any("/" in k for k in keys)
+    except Exception:
+        return False
+
+
+def _load_legacy_safetensors(tts_model, path: str) -> dict:
+    """Load old-format safetensors embedding via manual encode pipeline.
+
+    Old embeddings store only the audio_prompt tensor. We need to run it
+    through the flow_lm to create a proper model_state with KV caches.
+    """
+    logger.info(f"Loading legacy-format embedding: {path}")
+    prompt = safetensors.torch.load_file(path)["audio_prompt"]
+    prompt = prompt.to(tts_model.device)
+    
+    if getattr(tts_model.flow_lm, "insert_bos_before_voice", False):
+        prompt = torch.cat([tts_model.flow_lm.bos_before_voice, prompt], dim=1)
+        
+    model_state = init_states(tts_model.flow_lm, batch_size=1, sequence_length=prompt.shape[1])
+    with torch.no_grad():
+        tts_model._run_flow_lm_and_increment_step(
+            model_state=model_state, audio_conditioning=prompt
+        )
+        
+    num_audio_frames = prompt.shape[1]
+    if hasattr(tts_model, '_slice_kv_cache'):
+        tts_model._slice_kv_cache(model_state, num_audio_frames)
+    return model_state
 
 
 class FileLikeQueueWriter:
@@ -101,6 +133,14 @@ def _start_audio_producer(
 ) -> threading.Thread:
     def producer() -> None:
         try:
+            target_device = "cuda" if "gpu" in model_tier or "cuda" in model_tier else "cpu"
+            target_lang = model_tier.replace("-cpu", "").replace("-gpu", "").replace("-cuda", "")
+            if not target_lang or target_lang == "tts":
+                target_lang = settings.language
+            
+            if model_manager.language != target_lang:
+                model_manager.load(language=target_lang)
+
             model_manager.acquire_lock()
             try:
                 tts_model = model_manager.model
@@ -110,33 +150,22 @@ def _start_audio_producer(
                 tts_model.temp = temperature
                 tts_model.top_p = top_p
                 tts_model.repetition_penalty = repetition_penalty
+                tts_model.lsd_decode_steps = lsd_decode_steps
 
-                if "hd" in model_tier:
-                    tts_model.lsd_decode_steps = max(lsd_decode_steps, 16)
-                else:
-                    tts_model.lsd_decode_steps = lsd_decode_steps
-
-                current_device = model_manager.device
-                if "cuda" in model_tier and torch.cuda.is_available():
-                    if current_device != "cuda":
+                if target_device == "cuda" and torch.cuda.is_available():
+                    if model_manager.device != "cuda":
                         model_manager.move_to_device("cuda")
                 else:
-                    if current_device != "cpu":
+                    if model_manager.device != "cpu":
                         model_manager.move_to_device("cpu")
 
-                is_safe_file = os.path.isabs(voice_name)
-                if os.path.exists(voice_name) and os.path.isfile(voice_name) and is_safe_file:
-                    file_ext = os.path.splitext(voice_name)[1].lower()
-                    if file_ext == ".safetensors":
-                        prompt = safetensors.torch.load_file(voice_name)["audio_prompt"]
-                        prompt = prompt.to(tts_model.device)
-                        model_state = init_states(tts_model.flow_lm, batch_size=1, sequence_length=1000)
-                        with torch.no_grad():
-                            tts_model._run_flow_lm_and_increment_step(model_state=model_state, audio_conditioning=prompt)
-                        num_audio_frames = prompt.shape[1]
-                        tts_model._slice_kv_cache(model_state, num_audio_frames)
-                    else:
-                        model_state = tts_model.get_state_for_audio_prompt(voice_name)
+                # Backward compat: detect old-format safetensors with {"audio_prompt": ...}
+                if (
+                    voice_name.endswith(".safetensors")
+                    and os.path.isfile(voice_name)
+                    and _is_legacy_safetensors(voice_name)
+                ):
+                    model_state = _load_legacy_safetensors(tts_model, voice_name)
                 else:
                     model_state = tts_model.get_state_for_audio_prompt(voice_name)
 

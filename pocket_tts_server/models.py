@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class SpeechRequest(BaseModel):
-    model: Literal["tts-1", "tts-1-hd", "tts-1-cuda", "tts-1-hd-cuda"] = Field("tts-1", description="TTS model to use")
+    model: str = Field("english-cpu", description="TTS model to use (format: language-device)")
     input: str = Field(..., min_length=1, max_length=settings.max_input_length, description="Text to generate")
     voice: str = Field("alloy", description="Voice identifier (predefined or custom)")
     response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field("wav")

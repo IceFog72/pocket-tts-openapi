@@ -16,6 +16,7 @@ class ModelManager:
     _model: Any = field(default=None, repr=False)
     _device: Optional[str] = None
     _sample_rate: Optional[int] = None
+    _language: Optional[str] = None
     _lock: threading.RLock = field(default_factory=threading.RLock)
     _loading: bool = False
     _load_event: threading.Event = field(default_factory=threading.Event)
@@ -36,6 +37,11 @@ class ModelManager:
             return self._sample_rate or settings.default_sample_rate
 
     @property
+    def language(self) -> Optional[str]:
+        with self._lock:
+            return self._language
+
+    @property
     def is_loaded(self) -> bool:
         with self._lock:
             return self._model is not None
@@ -46,13 +52,53 @@ class ModelManager:
     def release_lock(self):
         self._lock.release()
 
-    def load(self, timeout: int = settings.model_load_timeout) -> None:
+    def load(self, timeout: int = settings.model_load_timeout, language: Optional[str] = None) -> None:
+        target_language = language or settings.language
+        
+        import pocket_tts.data.audio as pt_audio
+        if not hasattr(pt_audio, "_patched_audio_read"):
+            orig_audio_read = pt_audio.audio_read
+            def patched_audio_read(filepath):
+                from pathlib import Path
+                filepath = Path(filepath)
+                if filepath.suffix.lower() == ".wav":
+                    try:
+                        import wave
+                        with wave.open(str(filepath), "rb") as f:
+                            pass # Just test if it opens
+                    except Exception as e:
+                        if "unknown format: 3" in str(e) or "wave" in str(e).lower():
+                            import soundfile as sf
+                            import torch
+                            data, sample_rate = sf.read(str(filepath), dtype="float32")
+                            if data.ndim == 1:
+                                wav = torch.from_numpy(data).unsqueeze(0)
+                            else:
+                                wav = torch.from_numpy(data.mean(axis=1)).unsqueeze(0)
+                            return wav, sample_rate
+                return orig_audio_read(filepath)
+            
+            pt_audio.audio_read = patched_audio_read
+            pt_audio._patched_audio_read = True
+            
+            # Also patch tts_model's namespace if already imported
+            import sys
+            if "pocket_tts.models.tts_model" in sys.modules:
+                sys.modules["pocket_tts.models.tts_model"].audio_read = patched_audio_read
+
         from pocket_tts import TTSModel
 
         self._lock.acquire()
         try:
             if self._model is not None:
-                return
+                if self._language == target_language:
+                    return
+                else:
+                    logger.info(f"Switching language from {self._language} to {target_language}")
+                    del self._model
+                    self._model = None
+                    if self._device == "cuda" and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
             if self._loading:
                 # Another thread is loading — wait outside the lock
                 self._lock.release()
@@ -73,7 +119,12 @@ class ModelManager:
 
             def _do_load():
                 try:
-                    load_result["model"] = TTSModel.load_model()
+                    # Patch again just in case it was imported during another thread
+                    import sys
+                    if "pocket_tts.models.tts_model" in sys.modules:
+                        sys.modules["pocket_tts.models.tts_model"].audio_read = pt_audio.audio_read
+                        
+                    load_result["model"] = TTSModel.load_model(language=target_language)
                 except Exception as e:
                     load_result["error"] = e
 
@@ -89,16 +140,13 @@ class ModelManager:
             with self._lock:
                 self._model = load_result["model"]
 
-                if not hasattr(TTSModel, "_slice_kv_cache"):
-                    logger.info("Patching TTSModel with missing _slice_kv_cache method")
-                    setattr(TTSModel, "_slice_kv_cache", _slice_kv_cache)
-
                 self._device = self._model.device
                 self._sample_rate = getattr(self._model, "sample_rate", settings.default_sample_rate)
+                self._language = target_language
                 self._loading = False
                 self._load_event.set()
 
-            logger.info(f"Pocket TTS loaded | Device: {self._device} | Sample Rate: {self._sample_rate}")
+            logger.info(f"Pocket TTS loaded | Device: {self._device} | Sample Rate: {self._sample_rate} | Language: {self._language}")
 
         except Exception as e:
             with self._lock:
@@ -111,12 +159,12 @@ class ModelManager:
         with self._lock:
             if self._model is None:
                 return
-                if self._device != target_device:
-                    logger.info(f"Moving model from {self._device} to {target_device}")
-                    self._model.to(target_device)
-                    self._device = target_device
-                    if target_device == "cpu":
-                        torch.cuda.empty_cache()
+            if self._device != target_device:
+                logger.info(f"Moving model from {self._device} to {target_device}")
+                self._model.to(target_device)
+                self._device = target_device
+                if target_device == "cpu":
+                    torch.cuda.empty_cache()
 
     def shutdown(self) -> None:
         with self._lock:
@@ -125,17 +173,7 @@ class ModelManager:
                 del self._model
                 self._model = None
                 self._device = None
-
-
-def _slice_kv_cache(self, model_state: dict, sequence_length: int) -> None:
-    for module_name, module_state in model_state.items():
-        if "cache" in module_state:
-            cache = module_state["cache"]
-            if cache.shape[2] > sequence_length:
-                cache = cache[:, :, :sequence_length, :, :].contiguous()
-            if cache.shape[3] > sequence_length:
-                cache = cache[:, :, :, :sequence_length, :].contiguous()
-            module_state["cache"] = cache
+                self._language = None
 
 
 model_manager = ModelManager()

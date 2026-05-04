@@ -5,10 +5,6 @@ import threading
 from pathlib import Path
 from typing import Set
 
-import safetensors.torch
-import soundfile as sf
-import torch
-
 from .config import settings
 from .constants import Colors, DEFAULT_VOICES, VOICE_MAPPING
 from .model_manager import model_manager
@@ -42,16 +38,10 @@ def load_custom_voices() -> Set[str]:
                 if voice_name not in custom_voices:
                     if tts_model is not None:
                         try:
+                            from pocket_tts import export_model_state
                             logger.info(f"Exporting '{voice_name}' to embeddings/ for faster loading...")
-                            audio, sr = sf.read(wav_path)
-                            audio_pt = torch.from_numpy(audio).float()
-                            if len(audio_pt.shape) == 1:
-                                audio_pt = audio_pt.unsqueeze(0)
-                            from pocket_tts.data.audio_utils import convert_audio
-                            audio_resampled = convert_audio(audio_pt, sr, tts_model.config.mimi.sample_rate, 1)
-                            with torch.no_grad():
-                                prompt = tts_model._encode_audio(audio_resampled.unsqueeze(0).to(tts_model.device))
-                            safetensors.torch.save_file({"audio_prompt": prompt.cpu()}, str(st_path))
+                            model_state = tts_model.get_state_for_audio_prompt(wav_path, truncate=True)
+                            export_model_state(model_state, str(st_path))
                             logger.info(f"Exported '{voice_name}' to {st_path}")
                             with voice_lock:
                                 VOICE_MAPPING[voice_name] = str(st_path.resolve())

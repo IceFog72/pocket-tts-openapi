@@ -31,6 +31,7 @@ def _load_ini(path: str = "config.ini") -> dict:
             "tts": {
                 "temperature": float, "lsd_decode_steps": int,
                 "top_p": float, "repetition_penalty": float, "model_tier": str,
+                "language": str,
             },
         }
 
@@ -87,6 +88,7 @@ class Settings(BaseSettings):
     top_p: float = _ini.get("top_p", 0.95)
     repetition_penalty: float = _ini.get("repetition_penalty", 1.1)
     lsd_decode_steps: int = _ini.get("lsd_decode_steps", 2)
+    language: str = _ini.get("language", "english")
     model_tier: str = _ini.get("model_tier", "tts-1")
 
     # Input validation settings
