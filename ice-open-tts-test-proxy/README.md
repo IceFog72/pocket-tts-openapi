@@ -63,7 +63,8 @@ POST /speak
   "text": "Hello world",
   "voice": "nova",
   "speed": 1.0,
-  "format": "wav"
+  "format": "wav",
+  "model": "english-cpu"
 }
 ```
 
@@ -123,7 +124,7 @@ requests.post("http://127.0.0.1:8181/speak", json={
 ```bash
 curl -X POST http://127.0.0.1:5000/speak \
   -H "Content-Type: application/json" \
-  -d '{"text": "Hello!", "voice": "nova"}'
+  -d '{"text": "Hello!", "voice": "nova", "model": "english-cpu"}'
 ```
 
 ## Available Voices
@@ -142,6 +143,7 @@ tts_server_url = http://localhost:8005
 api_host = 127.0.0.1
 api_port = 8181
 default_voice = nova
+model = english-cpu
 speed = 1.0
 format = wav
 ```

@@ -46,7 +46,8 @@ class Config:
             'api_port': '8181',
             'default_voice': 'nova',
             'speed': '1.0',
-            'format': 'wav'
+            'format': 'wav',
+            'model': 'english-cpu'
         }
         # Also add a section for logging if needed
         self.parser['logging'] = {
@@ -121,19 +122,34 @@ class TTSClient:
             log.error(f"Error fetching voices: {e}")
             # Fallback voices
             return ["nova", "alloy", "echo", "fable", "onyx", "shimmer"]
+            
+    def get_models(self) -> list:
+        """Get available models from TTS server."""
+        log = logging.getLogger("tts_proxy.client")
+        try:
+            import requests
+            resp = requests.get(f"{self.base_url}/v1/models", timeout=5)
+            resp.raise_for_status()
+            models_data = resp.json().get("data", [])
+            models = [m.get("id") for m in models_data if "id" in m]
+            return models if models else ["english-cpu", "english-gpu"]
+        except Exception as e:
+            log.warning(f"Error fetching models: {e}")
+            return ["english-cpu", "english-gpu"]
     
     def generate_speech(self, text: str, voice: str, speed: float = 1.0, 
-                        format: str = "wav") -> Optional[bytes]:
+                        format: str = "wav", model: str = "english-cpu") -> Optional[bytes]:
         """Generate speech and return audio bytes."""
         log = logging.getLogger("tts_proxy.client")
         payload = {
             "input": text,
             "voice": voice,
             "response_format": format,
-            "speed": speed
+            "speed": speed,
+            "model": model
         }
         try:
-            log.info(f"Generating speech: voice={voice}, speed={speed}, text_len={len(text)}")
+            log.info(f"Generating speech: model={model}, voice={voice}, speed={speed}, text_len={len(text)}")
             start_time = time.time()
             import requests
             resp = requests.post(

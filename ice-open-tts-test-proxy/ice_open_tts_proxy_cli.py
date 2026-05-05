@@ -171,18 +171,19 @@ def list_voices(tts_url: str):
 
 
 def generate_speech(text: str, voice: str, speed: float, format: str,
-                    output: str, tts_url: str):
+                    output: str, tts_url: str, model: str = "english-cpu"):
     """Generate speech and save to file."""
     log = logging.getLogger("tts_proxy_cli")
     payload = {
         "input": text,
         "voice": voice,
         "response_format": format,
-        "speed": speed
+        "speed": speed,
+        "model": model
     }
 
-    print(f"Generating speech (voice={voice}, format={format})")
-    log.info(f"Generate speech: voice={voice}, speed={speed}, format={format}, text_len={len(text)}")
+    print(f"Generating speech (model={model}, voice={voice}, format={format})")
+    log.info(f"Generate speech: model={model}, voice={voice}, speed={speed}, format={format}, text_len={len(text)}")
 
     try:
         start_time = time.time()
@@ -205,11 +206,11 @@ def generate_speech(text: str, voice: str, speed: float, format: str,
         sys.exit(1)
 
 
-def speak(text: str, voice: str, speed: float, proxy_url: str):
+def speak(text: str, voice: str, speed: float, proxy_url: str, model: str = "english-cpu"):
     """Send text to proxy for playback."""
     log = logging.getLogger("tts_proxy_cli")
-    payload = {"text": text, "voice": voice, "speed": speed}
-    log.info(f"Speak: voice={voice}, speed={speed}, text='{text}'")
+    payload = {"text": text, "voice": voice, "speed": speed, "model": model}
+    log.info(f"Speak: model={model}, voice={voice}, speed={speed}, text='{text}'")
 
     try:
         resp = requests.post(f"{proxy_url}/speak", json=payload, timeout=30)
@@ -249,12 +250,13 @@ def run_server(tts_url: str, host: str, port: int, feed_queue: Optional[queue.Qu
         voice = data.get('voice', 'nova')
         speed = float(data.get('speed', 1.0))
         fmt = data.get('format', 'wav')
+        model = data.get('model', 'english-cpu')
         
         if not text:
             return jsonify({"error": "No text"}), 400
         
         # Generate audio
-        payload = {"input": text, "voice": voice, "response_format": fmt, "speed": speed}
+        payload = {"input": text, "voice": voice, "response_format": fmt, "speed": speed, "model": model}
         try:
             resp = requests.post(f"{tts_url}/v1/audio/speech", json=payload, timeout=60)
             resp.raise_for_status()
@@ -277,6 +279,7 @@ def run_server(tts_url: str, host: str, port: int, feed_queue: Optional[queue.Qu
                 'voice': voice,
                 'speed': speed,
                 'format': fmt,
+                'model': model,
                 'timestamp': time.time()
             })
         
@@ -289,6 +292,14 @@ def run_server(tts_url: str, host: str, port: int, feed_queue: Optional[queue.Qu
             return resp.json()
         except:
             return jsonify({"voices": []})
+            
+    @app.route('/models')
+    def models():
+        try:
+            resp = requests.get(f"{tts_url}/v1/models", timeout=5)
+            return resp.json()
+        except:
+            return jsonify({"models": []})
     
     @app.route('/v1/audio/speech', methods=['POST'])
     def openai_speech():
@@ -299,13 +310,14 @@ def run_server(tts_url: str, host: str, port: int, feed_queue: Optional[queue.Qu
         speed = float(data.get('speed', 1.0))
         fmt = data.get('response_format', data.get('format', 'mp3'))
         stream = data.get('stream', False)
+        model = data.get('model', 'english-cpu')
         
         if not text:
             return jsonify({"error": "No input text"}), 400
         
-        log.info(f"OpenAI TTS: voice={voice}, speed={speed}, stream={stream}")
+        log.info(f"OpenAI TTS: model={model}, voice={voice}, speed={speed}, stream={stream}")
         
-        payload = {"input": text, "voice": voice, "response_format": fmt, "speed": speed}
+        payload = {"input": text, "voice": voice, "response_format": fmt, "speed": speed, "model": model}
         try:
             resp = requests.post(f"{tts_url}/v1/audio/speech",
                                  json=payload, timeout=60, stream=stream)
@@ -402,6 +414,7 @@ Examples:
     
     # Options
     parser.add_argument("--voice", default=_config.get("default_voice", "nova"), help="Voice name (default: nova)")
+    parser.add_argument("--model", default=_config.get("model", "english-cpu"), help="Language model (default: english-cpu)")
     parser.add_argument("--speed", type=float, default=_config.getfloat("speed", 1.0), help="Speed (0.25-4.0)")
     parser.add_argument("--format", default=_config.get("format", "mp3"), choices=["wav", "mp3", "opus", "flac"])
     parser.add_argument("--save", help="Output file path")
@@ -461,10 +474,11 @@ Examples:
                         msg_type = msg.get('type', 'unknown')
                         text = msg.get('text', '')
                         voice = msg.get('voice', 'unknown')
+                        model = msg.get('model', 'unknown')
                         fmt = msg.get('format', 'wav')
                         stream = msg.get('stream', False)
                         
-                        line = f"[{timestamp}] {voice} ({fmt}"
+                        line = f"[{timestamp}] {voice} ({model}, {fmt}"
                         if stream:
                             line += ", stream"
                         line += f"): {text}"
@@ -500,11 +514,10 @@ Examples:
     
     # Execute
     if args.speak:
-        speak(text, args.voice, args.speed, args.proxy_url)
+        speak(text, args.voice, args.speed, args.proxy_url, model=args.model)
     else:
         generate_speech(text, args.voice, args.speed, args.format, 
-                       args.save, args.tts_url)
-
+                       args.save, args.tts_url, model=args.model)
 
 if __name__ == "__main__":
     main()

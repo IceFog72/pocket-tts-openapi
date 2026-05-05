@@ -158,7 +158,7 @@ See **[AGENTS.md](ice-open-tts-test-proxy/AGENTS.md)** for detailed AI Agent int
 - **High Priority Mode**: Auto-runs as High Priority on Windows.
 - **Quality Parameters**: `temperature` (0.0-2.0), `lsd_decode_steps` (1-50).
 - **Large Block Handling**: Auto-splits long text into sentences.
-- **Model Tiers**: `tts-1` (fast), `tts-1-hd` (quality), `tts-1-cuda`, `tts-1-hd-cuda`.
+- **Model Tiers**: Multi-language support via `<language>-<device>` format (e.g., `english-cpu`, `french_24l-gpu`, `spanish-cuda`). Legacy endpoints also fall back gracefully.
 
 ### Audio Caching
 - Auto-caches generated files (default: 10).
@@ -177,6 +177,13 @@ See **[AGENTS.md](ice-open-tts-test-proxy/AGENTS.md)** for detailed AI Agent int
 - **Dependencies**: Python 3.10+, FFmpeg (for MP3/AAC/etc)
 - **Cache**: `./audio_cache/`
 - **Model cache**: `~/.cache/huggingface`
+
+### GPU VRAM Overhead (CUDA Context)
+When using a `-gpu` model, you may notice a lingering ~170 MB of VRAM usage even after the TTS generation has finished and the model weights have been purged. **This is not a memory leak.**
+
+Whenever a PyTorch application initializes the GPU for the first time, the NVIDIA driver creates a "CUDA context" for that Python process. This context loads essential GPU libraries (like cuBLAS/cuDNN handles) and driver state into VRAM. Depending on your driver version and GPU architecture, this base footprint is typically between 150 MB and 300 MB.
+
+This overhead is a hard architectural limitation of PyTorch and CUDA. Once a Python process creates a CUDA context, that memory is locked to the process until the application itself is shut down. However, the heavy components (the 1GB+ TTS model weights) are successfully freed when switching to a `-cpu` model, leaving the vast majority of your VRAM completely free for other tasks.
 
 ## Feedback
 

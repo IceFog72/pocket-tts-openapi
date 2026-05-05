@@ -199,6 +199,7 @@ class OpenAITTSStreamingManager:
         self.voice = "nova"
         self.speed = 1.0
         self.format = "wav"
+        self.model = "english-cpu"
         self.abort_flag = threading.Event()
         self.request_serial = 0 # Track requests for cancellation
         
@@ -277,9 +278,10 @@ class OpenAITTSStreamingManager:
                 "input": text,
                 "voice": self.voice,
                 "response_format": self.format,
-                "speed": self.speed
+                "speed": self.speed,
+                "model": self.model
             }
-            log.info(f"LIVE STREAM REQUEST: voice='{self.voice}', speed={self.speed}, payload_voice='{payload['voice']}'")
+            log.info(f"LIVE STREAM REQUEST: model='{self.model}', voice='{self.voice}', speed={self.speed}, payload_voice='{payload['voice']}'")
             # Use stream=True to get chunked response
             for attempt in range(2):
                 # Check for cancellation before network call
@@ -818,24 +820,32 @@ class TTSApp:
         self.server_status = ttk.Label(server_frame, text="●", foreground="red")
         self.server_status.pack(side=tk.LEFT, padx=5)
         
-        # --- Voice Selection ---
-        voice_frame = ttk.LabelFrame(main_frame, text="Voice", padding="5")
+        # --- Voice & Model Selection ---
+        voice_frame = ttk.LabelFrame(main_frame, text="Model & Voice", padding="5")
         voice_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(voice_frame, text="Model:").pack(side=tk.LEFT)
+        self.model_var = tk.StringVar(value=self.config.get("model", "english-cpu"))
+        self.model_combo = ttk.Combobox(voice_frame, textvariable=self.model_var,
+                                         state="readonly", width=16)
+        self.model_combo.pack(side=tk.LEFT, padx=(5, 10))
+        self.model_combo['values'] = ["english-cpu", "english-gpu"]
         
         ttk.Label(voice_frame, text="Voice:").pack(side=tk.LEFT)
         self.voice_var = tk.StringVar(value=self.config.get("default_voice", "nova"))
         self.voice_combo = ttk.Combobox(voice_frame, textvariable=self.voice_var,
-                                         state="readonly", width=20)
+                                         state="readonly", width=16)
         self.voice_combo.pack(side=tk.LEFT, padx=5)
         self.voice_combo['values'] = ["nova", "alloy", "echo", "fable", "onyx", "shimmer"]
         
-        ttk.Label(voice_frame, text="Speed:").pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(voice_frame, text="Speed:").pack(side=tk.LEFT, padx=(5, 0))
         self.speed_var = tk.DoubleVar(value=self.config.get("speed", 1.0))
         self.speed_spin = ttk.Spinbox(voice_frame, from_=0.25, to=4.0, increment=0.1,
                                        textvariable=self.speed_var, width=5)
         self.speed_spin.pack(side=tk.LEFT, padx=5)
         
         # Sync changes to live manager if it exists
+        self.model_var.trace_add("write", lambda *args: self._sync_live_settings())
         self.voice_var.trace_add("write", lambda *args: self._sync_live_settings())
         self.speed_var.trace_add("write", lambda *args: self._sync_live_settings())
         
@@ -969,12 +979,19 @@ class TTSApp:
         threading.Thread(target=do_connect, daemon=True).start()
     
     def _refresh_voices(self):
-        """Fetch available voices from TTS server."""
+        """Fetch available voices and models from TTS server."""
         def do_refresh():
             voices = self.tts_client.get_voices()
-            if voices:
-                self.voice_combo['values'] = voices
-                self.status_queue.put(f"Loaded {len(voices)} voices")
+            models = self.tts_client.get_models()
+            
+            def update_ui():
+                if voices:
+                    self.voice_combo['values'] = voices
+                    self.status_queue.put(f"Loaded {len(voices)} voices")
+                if models:
+                    self.model_combo['values'] = models
+                    self.status_queue.put(f"Loaded {len(models)} models")
+            self.root.after(0, update_ui)
         
         threading.Thread(target=do_refresh, daemon=True).start()
     
@@ -993,6 +1010,7 @@ class TTSApp:
                 speed=self.speed_var.get(),
                 format="wav"
             )
+            self.live_tts_manager.model = self.model_var.get()
             self.last_live_text_len = len(self.text_input.get("1.0", tk.INSERT))
             self.stop_btn.config(state=tk.NORMAL)
             self.speak_btn.config(state=tk.DISABLED)
@@ -1010,9 +1028,11 @@ class TTSApp:
             try:
                 v = self.voice_var.get()
                 s = self.speed_var.get()
+                m = self.model_var.get()
                 self.live_tts_manager.set_voice(v)
                 self.live_tts_manager.set_speed(s)
-                print(f"DEBUG: Synced live settings: voice={v}, speed={s}")
+                self.live_tts_manager.model = m
+                print(f"DEBUG: Synced live settings: model={m}, voice={v}, speed={s}")
             except Exception as e:
                 print(f"DEBUG: Failed to sync live settings: {e}")
 
@@ -1075,10 +1095,11 @@ class TTSApp:
         
         voice = self.voice_var.get()
         speed = self.speed_var.get()
+        model = self.model_var.get()
         
         self.speak_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
-        self.playing_label.config(text=f"Generating speech with {voice}...")
+        self.playing_label.config(text=f"Generating speech with {voice} ({model})...")
         
         # Increment and capture serial for cancellation
         with self.serial_lock:
@@ -1086,7 +1107,7 @@ class TTSApp:
             request_serial = self.gen_serial
         
         def do_speak():
-            audio_data = self.tts_client.generate_speech(text, voice, speed, "wav")
+            audio_data = self.tts_client.generate_speech(text, voice, speed, "wav", model=model)
             
             # Check if this request is still valid
             with self.serial_lock:
@@ -1104,7 +1125,7 @@ class TTSApp:
         
         threading.Thread(target=do_speak, daemon=True).start()
 
-    def _generate_by_mode(self, text, voice, speed, fmt, mode):
+    def _generate_by_mode(self, text, voice, speed, fmt, mode, model="english-cpu"):
         """Generate audio using the selected API mode."""
         import requests
 
@@ -1118,13 +1139,14 @@ class TTSApp:
             "voice": voice,
             "format": fmt,
             "speed": speed,
+            "model": model,
             "mode": mode,
         })
         
         if mode == "OpenAI POST":
             try:
                 r = requests.post(f"{base}/v1/audio/speech",
-                    json={"input": text, "voice": voice, "response_format": fmt, "speed": speed},
+                    json={"input": text, "voice": voice, "response_format": fmt, "speed": speed, "model": model},
                     timeout=60)
                 r.raise_for_status()
                 return r.content
@@ -1135,7 +1157,7 @@ class TTSApp:
         elif mode == "XTTS GET Stream":
             try:
                 from urllib.parse import urlencode
-                params = urlencode({"text": text, "voice": voice, "format": fmt, "speed": speed})
+                params = urlencode({"text": text, "voice": voice, "format": fmt, "speed": speed, "model": model})
                 r = requests.get(f"{base}/tts_stream?{params}", timeout=60, stream=True)
                 r.raise_for_status()
                 return r.content

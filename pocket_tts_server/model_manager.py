@@ -97,7 +97,9 @@ class ModelManager:
                     logger.info(f"Switching language from {self._language} to {target_language}")
                     del self._model
                     self._model = None
-                    if self._device == "cuda" and torch.cuda.is_available():
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
                         torch.cuda.empty_cache()
             if self._loading:
                 # Another thread is loading — wait outside the lock
@@ -164,7 +166,10 @@ class ModelManager:
                 self._model.to(target_device)
                 self._device = target_device
                 if target_device == "cpu":
-                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
     def shutdown(self) -> None:
         with self._lock:
@@ -174,6 +179,10 @@ class ModelManager:
                 self._model = None
                 self._device = None
                 self._language = None
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
 
 model_manager = ModelManager()

@@ -83,16 +83,17 @@ def get_voices(url: str):
 
 def generate_speech(url: str, text: str, voice: str = "nova", 
                     speed: float = 1.0, format: str = "wav",
-                    output_file: str = None, play: bool = False):
+                    output_file: str = None, play: bool = False, model: str = "english-cpu"):
     """Generate speech from text."""
     payload = {
         "input": text,
         "voice": voice,
         "response_format": format,
-        "speed": speed
+        "speed": speed,
+        "model": model
     }
     
-    print(f"Generating speech with voice '{voice}'...")
+    print(f"Generating speech with voice '{voice}' ({model})...")
     
     try:
         resp = requests.post(f"{url}/v1/audio/speech", json=payload, timeout=60)
@@ -124,12 +125,13 @@ def generate_speech(url: str, text: str, voice: str = "nova",
 
 
 def speak_to_gui(text: str, voice: str = "nova", speed: float = 1.0,
-                 gui_url: str = GUI_APP_URL):
+                 gui_url: str = GUI_APP_URL, model: str = "english-cpu"):
     """Send text to GUI app for playback."""
     payload = {
         "text": text,
         "voice": voice,
-        "speed": speed
+        "speed": speed,
+        "model": model
     }
     
     print(f"Sending to GUI app: '{text[:50]}...'")
@@ -176,6 +178,7 @@ Examples:
     
     # Options
     parser.add_argument("--voice", default=_config.get("default_voice", "nova"), help="Voice to use (default: nova)")
+    parser.add_argument("--model", default=_config.get("model", "english-cpu"), help="Language model (default: english-cpu)")
     parser.add_argument("--speed", type=float, default=_config.getfloat("speed", 1.0), help="Speech speed (0.25-4.0)")
     parser.add_argument("--format", default=_config.get("format", "wav"), choices=["wav", "mp3", "opus", "flac"],
                         help="Audio format (default: wav)")
@@ -227,10 +230,10 @@ Examples:
     
     # Execute command
     if args.speak:
-        speak_to_gui(text, args.voice, args.speed, args.gui_url)
+        speak_to_gui(text, args.voice, args.speed, args.gui_url, model=args.model)
     else:
         generate_speech(args.tts_url, text, args.voice, args.speed,
-                       args.format, args.save, args.play)
+                       args.format, args.save, args.play, model=args.model)
 
 
 if __name__ == "__main__":

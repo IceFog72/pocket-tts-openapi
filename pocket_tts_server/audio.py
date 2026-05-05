@@ -198,6 +198,10 @@ def _start_audio_producer(
                 queue.put(None, timeout=settings.eof_timeout)
             except Full:
                 pass
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     thread = threading.Thread(target=producer, daemon=True)
     thread.start()
