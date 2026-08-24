@@ -90,18 +90,8 @@ class ModelManager:
 
         self._lock.acquire()
         try:
-            if self._model is not None:
-                if self._language == target_language:
-                    return
-                else:
-                    logger.info(f"Switching language from {self._language} to {target_language}")
-                    del self._model
-                    self._model = None
-                    self._language = None
-                    import gc
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+            if self._model is not None and self._language == target_language:
+                return
             if self._loading:
                 # Another thread is loading — wait outside the lock
                 self._lock.release()
@@ -141,6 +131,14 @@ class ModelManager:
                 raise load_result["error"]
 
             with self._lock:
+                if self._model is not None:
+                    logger.info(f"Switching language from {self._language} to {target_language}")
+                    del self._model
+                    self._model = None
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 self._model = load_result["model"]
 
                 self._device = self._model.device
@@ -154,8 +152,9 @@ class ModelManager:
         except Exception as e:
             with self._lock:
                 self._loading = False
-                self._language = None
                 self._load_event.set()
+                if self._model is None:
+                    self._language = None
             logger.error(f"Failed to load TTS model: {e}")
             raise
 

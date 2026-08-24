@@ -198,6 +198,9 @@ async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks)
     try:
         logger.info(f"TTS request: voice='{data.voice}', format='{data.response_format}', len={len(data.input)}")
 
+        if not model_manager.is_loaded:
+            raise HTTPException(status_code=503, detail="TTS model not loaded")
+
         v = data.voice
         is_path_voice = os.path.isabs(v) and os.path.isfile(v)
         if not is_path_voice:
@@ -696,6 +699,8 @@ async def xtts_stream_get(
         v = "nova"
     if not text.strip():
         raise HTTPException(status_code=400, detail="text is required")
+    if not model_manager.is_loaded:
+        raise HTTPException(status_code=503, detail="TTS model not loaded")
     return StreamingResponse(
         generate_audio(text=text, voice=v, speed=speed, format=format),
         media_type=MEDIA_TYPES.get(format, "audio/mpeg"),
@@ -716,6 +721,8 @@ async def xtts_post(request: Request) -> StreamingResponse:
     fmt = data.get("format", "wav")
     if not text.strip():
         raise HTTPException(status_code=400, detail="text is required")
+    if not model_manager.is_loaded:
+        raise HTTPException(status_code=503, detail="TTS model not loaded")
     return StreamingResponse(
         generate_audio(text=text, voice=voice, speed=speed, format=fmt),
         media_type=MEDIA_TYPES.get(fmt, "audio/wav"),
