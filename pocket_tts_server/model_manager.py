@@ -54,7 +54,7 @@ class ModelManager:
 
     def load(self, timeout: int = settings.model_load_timeout, language: Optional[str] = None) -> None:
         target_language = language or settings.language
-        
+
         import pocket_tts.data.audio as pt_audio
         if not hasattr(pt_audio, "_patched_audio_read"):
             orig_audio_read = pt_audio.audio_read
@@ -77,10 +77,10 @@ class ModelManager:
                                 wav = torch.from_numpy(data.mean(axis=1)).unsqueeze(0)
                             return wav, sample_rate
                 return orig_audio_read(filepath)
-            
+
             pt_audio.audio_read = patched_audio_read
             pt_audio._patched_audio_read = True
-            
+
             # Also patch tts_model's namespace if already imported
             import sys
             if "pocket_tts.models.tts_model" in sys.modules:
@@ -97,6 +97,7 @@ class ModelManager:
                     logger.info(f"Switching language from {self._language} to {target_language}")
                     del self._model
                     self._model = None
+                    self._language = None
                     import gc
                     gc.collect()
                     if torch.cuda.is_available():
@@ -125,7 +126,7 @@ class ModelManager:
                     import sys
                     if "pocket_tts.models.tts_model" in sys.modules:
                         sys.modules["pocket_tts.models.tts_model"].audio_read = pt_audio.audio_read
-                        
+
                     load_result["model"] = TTSModel.load_model(language=target_language)
                 except Exception as e:
                     load_result["error"] = e
@@ -153,6 +154,7 @@ class ModelManager:
         except Exception as e:
             with self._lock:
                 self._loading = False
+                self._language = None
                 self._load_event.set()
             logger.error(f"Failed to load TTS model: {e}")
             raise
