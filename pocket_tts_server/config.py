@@ -25,8 +25,7 @@ def _load_ini(path: str = "config.ini") -> dict:
             },
             "validation": {"max_input_length": int, "min_input_length": int},
             "audio": {
-                "queue_size": int, "queue_timeout": float,
-                "eof_timeout": float, "chunk_size": int,
+                "queue_size": int, "eof_timeout": float, "chunk_size": int,
             },
             "tts": {
                 "temperature": float, "lsd_decode_steps": int,
