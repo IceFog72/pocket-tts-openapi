@@ -3,7 +3,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import subprocess
 import threading
 import time
@@ -59,16 +58,16 @@ def _load_legacy_safetensors(tts_model, path: str) -> dict:
     logger.info(f"Loading legacy-format embedding: {path}")
     prompt = safetensors.torch.load_file(path)["audio_prompt"]
     prompt = prompt.to(tts_model.device)
-    
+
     if getattr(tts_model.flow_lm, "insert_bos_before_voice", False):
         prompt = torch.cat([tts_model.flow_lm.bos_before_voice, prompt], dim=1)
-        
+
     model_state = init_states(tts_model.flow_lm, batch_size=1, sequence_length=prompt.shape[1])
     with torch.no_grad():
         tts_model._run_flow_lm_and_increment_step(
             model_state=model_state, audio_conditioning=prompt
         )
-        
+
     num_audio_frames = prompt.shape[1]
     if hasattr(tts_model, '_slice_kv_cache'):
         tts_model._slice_kv_cache(model_state, num_audio_frames)
@@ -85,7 +84,10 @@ class FileLikeQueueWriter:
         return self._pos
 
     def seek(self, offset, whence=0):
-        pass
+        raise OSError("FileLikeQueueWriter is not seekable")
+
+    def seekable(self) -> bool:
+        return False
 
     def write(self, data: bytes) -> int:
         if not data:
@@ -137,7 +139,7 @@ def _start_audio_producer(
             target_lang = model_tier.replace("-cpu", "").replace("-gpu", "").replace("-cuda", "")
             if not target_lang or target_lang == "tts":
                 target_lang = settings.language
-            
+
             if model_manager.language != target_lang:
                 model_manager.load(language=target_lang)
 
@@ -169,26 +171,14 @@ def _start_audio_producer(
                 else:
                     model_state = tts_model.get_state_for_audio_prompt(voice_name)
 
-                parts = re.split(r'(?<=[.!?])\s+', text.strip())
-
-                def combined_chunks():
-                    for part in parts:
-                        if not part.strip():
-                            continue
-                        if len(part) > 500:
-                            subtasks = re.split(r'(?<=[,;])\s+', part)
-                        else:
-                            subtasks = [part]
-                        for subtask in subtasks:
-                            if not subtask.strip():
-                                continue
-                            for chunk in tts_model.generate_audio_stream(
-                                model_state=model_state, text_to_generate=subtask
-                            ):
-                                yield chunk
-
                 with FileLikeQueueWriter(queue) as writer:
-                    stream_audio_chunks(writer, combined_chunks(), model_manager.sample_rate)
+                    stream_audio_chunks(
+                        writer,
+                        tts_model.generate_audio_stream(
+                            model_state=model_state, text_to_generate=text
+                        ),
+                        model_manager.sample_rate,
+                    )
             finally:
                 model_manager.release_lock()
         except Exception as e:
