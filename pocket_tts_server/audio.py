@@ -7,19 +7,9 @@ import subprocess
 import threading
 import time
 import uuid
-import wave
 from queue import Empty, Full, Queue
 from typing import AsyncIterator, Optional, Tuple
 from pathlib import Path
-
-# Patch wave.Wave_write.close to handle IOError on client disconnect
-_orig_wave_close = wave.Wave_write.close
-def _safe_wave_close(self):
-    try:
-        _orig_wave_close(self)
-    except (IOError, OSError):
-        pass  # Client disconnected during header patch — ignore
-wave.Wave_write.close = _safe_wave_close
 
 import torch
 from anyio import open_file
@@ -78,13 +68,6 @@ class FileLikeQueueWriter:
     def __init__(self, queue: Queue, timeout: float = 30.0):
         self.queue = queue
         self.timeout = timeout
-        self._pos = 0
-
-    def tell(self):
-        return self._pos
-
-    def seek(self, offset, whence=0):
-        raise OSError("FileLikeQueueWriter is not seekable")
 
     def seekable(self) -> bool:
         return False
@@ -92,7 +75,6 @@ class FileLikeQueueWriter:
     def write(self, data: bytes) -> int:
         if not data:
             return 0
-        self._pos += len(data)
         start_time = time.time()
         while True:
             if getattr(self.queue, 'abort', False):
