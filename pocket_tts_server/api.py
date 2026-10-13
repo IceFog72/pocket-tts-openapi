@@ -9,6 +9,7 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 from contextlib import asynccontextmanager
 from functools import wraps
+from typing import Any
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -145,6 +146,12 @@ app.add_middleware(
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
+    # Read-only discovery and health must stay available during overload.
+    if request.method == "GET" and request.url.path in (
+        "/health", "/v1/voices", "/speakers", "/v1/models", "/models", "/v1/formats",
+        "/v1/audio/speech/speakers",
+    ):
+        return await call_next(request)
     # Uvicorn resolves forwarded headers only for its configured trusted peers.
     # Do not trust a raw client-supplied header here.
     client_ip = request.client.host if request.client else "unknown"
@@ -223,12 +230,12 @@ class AudioStreamingResponse(StreamingResponse):
             await self.source.aclose()
 
 
-async def audio_response(source, request: Request = None, **kwargs):
+async def audio_response(source, request: Request | None = None, **kwargs):
     # Validation and admission errors must reach HTTP before success headers.
     # Watch disconnects while priming too, including waits for model ownership.
-    async def disconnected():
+    async def disconnected(active_request: Request) -> None:
         while True:
-            if (await request.receive())["type"] == "http.disconnect":
+            if (await active_request.receive())["type"] == "http.disconnect":
                 return
 
     if request is not None:
@@ -236,7 +243,7 @@ async def audio_response(source, request: Request = None, **kwargs):
         # ownership. This also covers GET compatibility requests.
         await request.body()
     first_task = asyncio.create_task(anext(source))
-    disconnect_task = asyncio.create_task(disconnected()) if request is not None else None
+    disconnect_task = asyncio.create_task(disconnected(request)) if request is not None else None
     try:
         if disconnect_task is not None:
             done, _ = await asyncio.wait((first_task, disconnect_task),
@@ -381,16 +388,26 @@ def limited_websocket(handler):
     """Bound connected sockets, including their per-socket phrase queues."""
     @wraps(handler)
     async def wrapped(websocket: WebSocket):
-        await websocket.accept()
+        async def reject(message, status, retry_after):
+            logger.warning("WebSocket admission rejected: %s", message)
+            if "websocket.http.response" in websocket.scope.get("extensions", {}):
+                await websocket.send_denial_response(JSONResponse(
+                    status_code=status, content={"error": message, "retry_after": retry_after},
+                    headers={"Retry-After": str(retry_after)}))
+            else:
+                # Closing before accept denies the handshake (HTTP 403).
+                await websocket.close(code=1013, reason=message)
+
         client_ip = websocket.client.host if websocket.client else "unknown"
         allowed, retry_after = rate_limiter.is_allowed(client_ip)
         if not allowed:
-            await websocket.close(code=1013, reason=f"Rate limit exceeded; retry after {retry_after}s")
+            await reject("Rate limit exceeded", 429, retry_after)
             return
         if not websocket_capacity.acquire():
-            await websocket.close(code=1013, reason="WebSocket capacity exhausted")
+            await reject("WebSocket capacity exhausted", 503, 5)
             return
         try:
+            await websocket.accept()
             await handler(websocket)
         finally:
             websocket_capacity.release()
@@ -401,7 +418,8 @@ def check_websocket_rate(websocket: WebSocket):
     client_ip = websocket.client.host if websocket.client else "unknown"
     allowed, retry_after = rate_limiter.is_allowed(client_ip)
     if not allowed:
-        raise RuntimeError(f"Rate limit exceeded; retry after {retry_after}s")
+        raise InputError("Rate limit exceeded", code="rate_limited", status_code=429,
+                         retry_after=retry_after)
 
 
 @app.websocket("/v1/audio/live")
@@ -416,7 +434,7 @@ async def websocket_tts(websocket: WebSocket):
 
     pending = asyncio.Queue(maxsize=32)
 
-    async def synthesize():
+    async def synthesize() -> None:
         while True:
             data = await pending.get()
             if data.get("type") == "text.done":
@@ -483,20 +501,26 @@ async def websocket_tts(websocket: WebSocket):
 
     worker = asyncio.create_task(synthesize())
     receiver = None
-    text_buffer = None
-    deadline = None
+    text_buffer: dict[str, Any] | None = None
+    deadline: float | None = None
 
-    def enqueue(data):
-        if data.get("type") != "text.done":
-            check_websocket_rate(websocket)
-        if pending.full():
-            raise RuntimeError("Synthesis queue full")
-        pending.put_nowait(data)
+    async def enqueue(data: dict[str, Any]) -> None:
+        try:
+            if pending.full():
+                raise InputError("Synthesis queue full", code="queue_full", status_code=429,
+                                 retry_after=1)
+            if data.get("type") != "text.done":
+                check_websocket_rate(websocket)
+            pending.put_nowait(data)
+        except InputError as exc:
+            details = error_details(exc)
+            await websocket.send_json({"status": "error", "request_id": data.get("request_id"),
+                                       "error": details['message'], **details})
 
-    def flush_text():
+    async def flush_text() -> None:
         nonlocal text_buffer, deadline
         if text_buffer and text_buffer["text"].strip():
-            enqueue(text_buffer)
+            await enqueue(text_buffer)
         text_buffer = None
         deadline = None
 
@@ -508,7 +532,7 @@ async def websocket_tts(websocket: WebSocket):
             done, _ = await asyncio.wait((receiver, worker), timeout=timeout,
                                         return_when=asyncio.FIRST_COMPLETED)
             if not done:
-                flush_text()
+                await flush_text()
                 continue
             if worker in done:
                 await worker
@@ -542,17 +566,17 @@ async def websocket_tts(websocket: WebSocket):
                     raise ValueError("text must be a string")
                 params = {key: value for key, value in data.items() if key not in ("text", "type")}
                 if text_buffer and any(text_buffer.get(key) != value for key, value in params.items()):
-                    flush_text()
+                    await flush_text()
                 if text_buffer is None:
                     text_buffer = {**params, "type": "text.append", "text": "",
                                    "stream": True, "format": data.get("format", "pcm")}
                 text_buffer["text"] += fragment
                 deadline = time.monotonic() + 0.12
                 if len(text_buffer["text"]) >= 120 or re.search(r"[.!?;:]\s*$", text_buffer["text"]):
-                    flush_text()
+                    await flush_text()
             elif kind in ("text.append", "text.done"):
-                flush_text()
-                enqueue(data)
+                await flush_text()
+                await enqueue(data)
     except WebSocketDisconnect:
         pass
     except (RuntimeError, ValueError) as exc:
@@ -621,9 +645,9 @@ async def websocket_realtime_tts(websocket: WebSocket):
             sentence = sentence.strip()
             if not sentence:
                 return
-            check_websocket_rate(websocket)
             logger.info(f"WS realtime: '{sentence[:60]}'")
             try:
+                check_websocket_rate(websocket)
                 chunk_count = 0
                 async for chunk in generate_audio(
                     text=sentence, voice=voice, speed=speed, format=fmt,

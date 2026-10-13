@@ -3,12 +3,16 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
+from pathlib import Path
 
 import torch
 
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+_audio_read_patch_lock = threading.Lock()
+_audio_read_patched = False
 
 
 @dataclass
@@ -56,36 +60,34 @@ class ModelManager:
     def load(self, timeout: int = settings.model_load_timeout, language: Optional[str] = None) -> None:
         target_language = language or settings.language
 
+        global _audio_read_patched
         import pocket_tts.data.audio as pt_audio
-        if not hasattr(pt_audio, "_patched_audio_read"):
-            orig_audio_read = pt_audio.audio_read
-            def patched_audio_read(filepath):
-                from pathlib import Path
-                filepath = Path(filepath)
-                if filepath.suffix.lower() == ".wav":
-                    try:
-                        import wave
-                        with wave.open(str(filepath), "rb") as f:
-                            pass # Just test if it opens
-                    except Exception as e:
-                        if "unknown format: 3" in str(e) or "wave" in str(e).lower():
-                            import soundfile as sf
-                            import torch
-                            data, sample_rate = sf.read(str(filepath), dtype="float32")
-                            if data.ndim == 1:
-                                wav = torch.from_numpy(data).unsqueeze(0)
-                            else:
-                                wav = torch.from_numpy(data.mean(axis=1)).unsqueeze(0)
-                            return wav, sample_rate
-                return orig_audio_read(filepath)
+        import pocket_tts.models.tts_model as pt_model
+        with _audio_read_patch_lock:
+            if not _audio_read_patched:
+                orig_audio_read = pt_audio.audio_read
+                def patched_audio_read(filepath: str | Path) -> tuple[torch.Tensor, int]:
+                    filepath = Path(filepath)
+                    if filepath.suffix.lower() == ".wav":
+                        try:
+                            import wave
+                            with wave.open(str(filepath), "rb") as f:
+                                pass # Just test if it opens
+                        except Exception as e:
+                            if "unknown format: 3" in str(e) or "wave" in str(e).lower():
+                                import soundfile as sf
+                                import torch
+                                data, sample_rate = sf.read(str(filepath), dtype="float32")
+                                if data.ndim == 1:
+                                    wav = torch.from_numpy(data).unsqueeze(0)
+                                else:
+                                    wav = torch.from_numpy(data.mean(axis=1)).unsqueeze(0)
+                                return wav, sample_rate
+                    return orig_audio_read(filepath)
 
-            pt_audio.audio_read = patched_audio_read
-            pt_audio._patched_audio_read = True
-
-            # Also patch tts_model's namespace if already imported
-            import sys
-            if "pocket_tts.models.tts_model" in sys.modules:
-                sys.modules["pocket_tts.models.tts_model"].audio_read = patched_audio_read
+                pt_audio.audio_read = patched_audio_read
+                pt_model.audio_read = patched_audio_read
+                _audio_read_patched = True
 
         from pocket_tts import TTSModel
 

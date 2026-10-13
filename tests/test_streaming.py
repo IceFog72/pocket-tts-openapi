@@ -1,6 +1,5 @@
 import asyncio
 import threading
-from queue import Queue
 
 import torch
 from fastapi.testclient import TestClient
@@ -46,11 +45,12 @@ def test_pcm_has_no_wav_header(monkeypatch):
         def generate_audio_stream(self, **kwargs): yield torch.full((240,), 0.25)
 
     monkeypatch.setattr(audio, 'model_manager', ModelManager(_model=Model(), _device='cpu', _language='english'))
-    queue = Queue()
+    queue = audio.AudioQueue()
     producer = audio._start_audio_producer(queue, 'alba', 'Hi.', model_tier='english-cpu', raw_pcm=True)
     producer.join(5)
     assert not producer.is_alive()
     result = queue.get_nowait()
+    assert isinstance(result, bytes)
     assert len(result) == 480
     assert not result.startswith(b'RIFF')
     assert int.from_bytes(result[:2], 'little', signed=True) == 8191

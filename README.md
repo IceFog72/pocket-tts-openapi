@@ -197,11 +197,11 @@ After updating the extension, reload SillyTavern to load its new scripts.
 
 Limits in `config.ini` apply across clients:
 
-- `rate_limit_requests = 30` per IP over `rate_limit_window = 60` seconds. HTTP requests, WebSocket connections, and submitted WebSocket phrases consume this budget. Live text fragments are charged when they become a phrase.
+- `rate_limit_requests = 30` per IP over `rate_limit_window = 60` seconds. HTTP work requests, WebSocket connection attempts, and submitted WebSocket phrases consume this budget. Read-only health and voice/model discovery stay available during overload. Live text fragments are charged when they become a phrase.
 - `max_websocket_connections = 8` across both streaming routes and the legacy realtime route. Each regular/live socket queues at most 32 phrases.
 - `max_pending_syntheses = 32` bounds active and waiting synthesis producers across HTTP and WebSocket requests. Excess work is rejected rather than creating more waiting threads.
 
-Overloaded or rate-limited sockets close with code 1013. A client should wait before reconnecting. Limits can be increased for longer replies or multiple users.
+Connections denied by admission limits receive HTTP 429 or 503 with `Retry-After` before the WebSocket handshake succeeds. Existing sockets stay open when a phrase exceeds its rate or queue limit: the rejected request receives `rate_limited` or `queue_full`, `retryable: true`, and `retry_after` in seconds. Active and queued speech remain intact. Limits can be increased for longer replies or multiple users.
 
 Rate limiting uses the connection's resolved client address. Raw `X-Forwarded-For` headers do not override it. Behind a reverse proxy, configure Uvicorn's trusted proxy addresses with `FORWARDED_ALLOW_IPS`; trust only the actual proxy.
 
@@ -233,6 +233,12 @@ Install test dependencies in the project environment and run the server tests:
 ```bash
 venv/bin/python -m pip install pytest httpx
 venv/bin/python -m pytest tests
+```
+
+Check server and test types with Pyright using the project interpreter:
+
+```bash
+uv tool run pyright --pythonpath venv/bin/python pocket_tts_server tests
 ```
 
 Measure WebSocket time to first audio without playing sound:

@@ -105,7 +105,7 @@ def resolve_voice(voice: str) -> str:
     with voice_lock:
         mapping = {name.casefold(): target for name, target in VOICE_MAPPING.items()}
     target = mapping.get(voice.casefold(), builtins.get(voice.casefold()))
-    if target in builtins.values():
+    if target is not None and target in builtins.values():
         return target
     if target is not None or os.path.isabs(voice):
         path = Path(target if target is not None else voice)

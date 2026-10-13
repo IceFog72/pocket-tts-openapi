@@ -12,7 +12,7 @@ import io
 import struct
 from contextlib import aclosing
 from queue import Empty, Full, Queue
-from typing import AsyncIterator, Optional, Tuple
+from typing import AsyncGenerator, Optional, Tuple
 from pathlib import Path
 
 import torch
@@ -71,8 +71,22 @@ def _load_legacy_safetensors(tts_model, path: str) -> dict:
     return model_state
 
 
+class AudioQueue(Queue[bytes | Exception | None]):
+    """Audio chunks, producer errors and EOF, with shared lifecycle state."""
+
+    def __init__(self, maxsize: int = 0):
+        super().__init__(maxsize=maxsize)
+        self.abort: bool = False
+        self.error: Exception | None = None
+        self.finished: bool = False
+
+
+class PipeWriterThread(threading.Thread):
+    error: Exception | None = None
+
+
 class FileLikeQueueWriter:
-    def __init__(self, queue: Queue, timeout: float = 30.0):
+    def __init__(self, queue: AudioQueue, timeout: float = 30.0):
         self.queue = queue
         self.timeout = timeout
         self._pos = 0
@@ -92,7 +106,7 @@ class FileLikeQueueWriter:
         self._pos += len(data)
         start_time = time.time()
         while True:
-            if getattr(self.queue, 'abort', False):
+            if self.queue.abort:
                 raise IOError("Generation aborted by client disconnect")
             try:
                 self.queue.put(data, timeout=1.0)
@@ -132,7 +146,7 @@ def _stream_wav_chunks(writer, chunks, sample_rate):
 
 
 def _start_audio_producer(
-    queue: Queue,
+    queue: AudioQueue,
     voice_name: str,
     text: str,
     temperature: float = settings.temperature,
@@ -150,14 +164,14 @@ def _start_audio_producer(
                 target_lang = settings.language
             
             while not model_manager.acquire_lock(timeout=0.1):
-                if getattr(queue, "abort", False):
+                if queue.abort:
                     return
             try:
-                if getattr(queue, "abort", False):
+                if queue.abort:
                     return
                 if model_manager.language != target_lang:
                     model_manager.load(language=target_lang)
-                if getattr(queue, "abort", False):
+                if queue.abort:
                     return
                 tts_model = model_manager.model
                 if tts_model is None:
@@ -201,7 +215,7 @@ def _start_audio_producer(
                         for subtask in subtasks:
                             if not subtask.strip():
                                 continue
-                            if getattr(queue, "abort", False):
+                            if queue.abort:
                                 return
                             for chunk in tts_model.generate_audio_stream(
                                 model_state=model_state, text_to_generate=subtask
@@ -217,7 +231,7 @@ def _start_audio_producer(
             finally:
                 model_manager.release_lock()
         except Exception as e:
-            if getattr(queue, "abort", False):
+            if queue.abort:
                 return
             queue.error = e
             if isinstance(e, InputError):
@@ -251,12 +265,12 @@ def _start_audio_producer(
     return thread
 
 
-async def _stream_queue_chunks(queue: Queue, producer: threading.Thread) -> AsyncIterator[bytes]:
+async def _stream_queue_chunks(queue: AudioQueue, producer: threading.Thread) -> AsyncGenerator[bytes, None]:
     while True:
         try:
             chunk = await asyncio.to_thread(queue.get, timeout=5.0)
         except Empty:
-            if getattr(queue, "abort", False) or not producer.is_alive():
+            if queue.abort or not producer.is_alive():
                 break
             continue
         except Exception:
@@ -266,7 +280,7 @@ async def _stream_queue_chunks(queue: Queue, producer: threading.Thread) -> Asyn
         if isinstance(chunk, Exception):
             raise chunk
         yield chunk
-    if getattr(queue, "error", None) is not None:
+    if queue.error is not None:
         raise queue.error
 
 
@@ -308,7 +322,7 @@ def _start_ffmpeg_process(format: str, speed: float = 1.0) -> Tuple[subprocess.P
     return proc, w_fd
 
 
-def _start_pipe_writer(queue: Queue, write_fd: int) -> threading.Thread:
+def _start_pipe_writer(queue: AudioQueue, write_fd: int) -> PipeWriterThread:
     def pipe_writer() -> None:
         try:
             with os.fdopen(write_fd, "wb") as pipe:
@@ -316,17 +330,17 @@ def _start_pipe_writer(queue: Queue, write_fd: int) -> threading.Thread:
                     try:
                         data = queue.get(timeout=1)
                     except Empty:
-                        if getattr(queue, "abort", False):
+                        if queue.abort:
                             break
-                        if getattr(queue, "finished", False):
-                            if getattr(queue, "error", None) is not None:
+                        if queue.finished:
+                            if queue.error is not None:
                                 raise queue.error
                             break
                         continue
                     if isinstance(data, Exception):
                         raise data
                     if data is None:
-                        if getattr(queue, "error", None) is not None:
+                        if queue.error is not None:
                             raise queue.error
                         break
                     try:
@@ -337,7 +351,7 @@ def _start_pipe_writer(queue: Queue, write_fd: int) -> threading.Thread:
         except Exception as exc:
             thread.error = exc
 
-    thread = threading.Thread(target=pipe_writer, daemon=True)
+    thread = PipeWriterThread(target=pipe_writer, daemon=True)
     thread.error = None
     thread.start()
     return thread
@@ -354,20 +368,19 @@ async def _generate_audio_core(
     top_p: float = settings.top_p,
     repetition_penalty: float = settings.repetition_penalty,
     model_tier: str = settings.model_tier,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes, None]:
     needs_ffmpeg = format in FFMPEG_FORMATS or (format in ("wav", "pcm") and speed != 1.0)
     if needs_ffmpeg and not _ffmpeg_available:
         raise HTTPException(status_code=400, detail=f"FFmpeg required for format '{format}' or speed adjustment, but FFmpeg is not installed")
 
-    queue: Queue[Optional[bytes]] = Queue(maxsize=settings.queue_size)
-    queue.abort = False  # type: ignore[attr-defined]
+    queue = AudioQueue(maxsize=settings.queue_size)
     producer_thread = _start_audio_producer(
         queue, voice_name, text, temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier,
         raw_pcm=(format == "pcm" and speed == 1.0),
     )
 
     proc: Optional[subprocess.Popen] = None
-    writer_thread: Optional[threading.Thread] = None
+    writer_thread: Optional[PipeWriterThread] = None
 
     try:
         if format in ("wav", "pcm") and speed == 1.0:
@@ -381,12 +394,16 @@ async def _generate_audio_core(
             proc = ffmpeg_proc
             writer_thread = _start_pipe_writer(queue, write_fd)
 
+            stdout, stderr = proc.stdout, proc.stderr
+            assert stdout is not None and stderr is not None, "FFmpeg pipes were not created"
+            read_stdout = stdout.read1 if isinstance(stdout, io.BufferedReader) else stdout.read
+
             # Drain stderr concurrently so a failing encoder cannot fill its
             # pipe and deadlock audio delivery. Retain only a bounded tail.
             stderr_tail = bytearray()
-            def drain_stderr():
+            def drain_stderr() -> None:
                 while True:
-                    data = proc.stderr.read(4096)
+                    data = stderr.read(4096)
                     if not data:
                         break
                     stderr_tail.extend(data)
@@ -395,7 +412,7 @@ async def _generate_audio_core(
             stderr_thread.start()
             try:
                 while True:
-                    chunk = await asyncio.to_thread(proc.stdout.read1, chunk_size)  # type: ignore[union-attr]
+                    chunk = await asyncio.to_thread(read_stdout, chunk_size)
                     if not chunk:
                         break
                     yield chunk
@@ -423,13 +440,12 @@ async def _generate_audio_core(
                     logger.warning(f"Error cleaning up FFmpeg process: {e}")
                 finally:
                     try:
-                        if proc.stdout:
-                            proc.stdout.close()  # type: ignore[union-attr]
+                        stdout.close()
                     except Exception:
                         pass
                     await asyncio.to_thread(stderr_thread.join, 5)
-                    if proc.stderr and not stderr_thread.is_alive():
-                        proc.stderr.close()
+                    if not stderr_thread.is_alive():
+                        stderr.close()
 
                 queue.abort = True
                 await asyncio.to_thread(producer_thread.join, 30)
@@ -443,7 +459,7 @@ async def _generate_audio_core(
         logger.exception(f"Error streaming audio format {format}: {e}")
         raise
     finally:
-        queue.abort = True  # type: ignore[attr-defined]
+        queue.abort = True
         while not queue.empty():
             try:
                 queue.get_nowait()
@@ -465,14 +481,16 @@ async def generate_audio(
     stream: bool = False,
     background_tasks: Optional[BackgroundTasks] = None,
     skip_cache: bool = False,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes, None]:
     if not model_manager.is_loaded:
         raise HTTPException(status_code=503, detail="TTS model not loaded")
 
     try:
-        request = SpeechRequest(input=text, voice=voice, model=model_tier,
-                                response_format=format, speed=speed, temperature=temperature,
-                                lsd_decode_steps=lsd_decode_steps)
+        request = SpeechRequest.model_validate({
+            "input": text, "voice": voice, "model": model_tier,
+            "response_format": format, "speed": speed, "temperature": temperature,
+            "lsd_decode_steps": lsd_decode_steps, "stream": stream,
+        })
     except ValidationError as exc:
         details = error_details(exc)
         raise InputError(details['message'], param=details['param']) from exc
@@ -480,68 +498,71 @@ async def generate_audio(
     model_tier = request.model
     voice_name = resolve_voice(request.voice)
 
-    # Skip caching for WebSocket streaming or when explicitly requested
+    # Uncached streams return before introducing any cache paths. Cached
+    # generation below always owns concrete paths and a defined cache key.
     if skip_cache:
-        cache_path = None
-        meta_path = None
-        temp_path = None
-    else:
-        cache_hash = cache_manager.generate_cache_key(
-            text, voice_name, format, speed, temperature,
-            lsd_decode_steps, top_p, repetition_penalty, model_tier
-        )
-        cache_path, meta_path = cache_manager.get_cache_path(cache_hash, format)
+        try:
+            async with aclosing(_generate_audio_core(
+                text, voice_name, speed, format, chunk_size,
+                temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier,
+            )) as source:
+                async for chunk in source:
+                    yield chunk
+        except (IOError, OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=500, detail=f"Audio generation failed: {exc}") from exc
+        return
 
-        # Ensure cache directory exists
-        cache_dir = Path(settings.audio_cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_hash = cache_manager.generate_cache_key(
+        text, voice_name, format, speed, temperature,
+        lsd_decode_steps, top_p, repetition_penalty, model_tier
+    )
+    cache_path, meta_path = cache_manager.get_cache_path(cache_hash, format)
 
-        if cache_manager.check_cache(cache_path):
-            try:
-                logger.info(f"Cache hit: {text[:80]}{'...' if len(text) > 80 else ''} ({os.path.getsize(cache_path)} bytes)")
-                async with await open_file(cache_path, "rb") as f:
-                    while True:
-                        chunk = await f.read(chunk_size)
-                        if not chunk:
-                            break
-                        yield chunk
-                return
-            except (IOError, OSError) as e:
-                logger.warning(f"Failed to read cache file, regenerating: {e}")
+    # Ensure cache directory exists
+    cache_dir = Path(settings.audio_cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-        temp_path = f"{cache_path}.{uuid.uuid4().hex}.tmp"
+    if cache_manager.check_cache(cache_path):
+        try:
+            logger.info(f"Cache hit: {text[:80]}{'...' if len(text) > 80 else ''} ({os.path.getsize(cache_path)} bytes)")
+            async with await open_file(cache_path, "rb") as f:
+                while True:
+                    chunk = await f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+            return
+        except (IOError, OSError) as e:
+            logger.warning(f"Failed to read cache file, regenerating: {e}")
+
+    temp_path = f"{cache_path}.{uuid.uuid4().hex}.tmp"
 
     try:
         async with aclosing(_generate_audio_core(
             text, voice_name, speed, format, chunk_size,
             temperature, lsd_decode_steps, top_p, repetition_penalty, model_tier,
         )) as source:
-            if skip_cache:
+            async with await open_file(temp_path, "wb") as cache_file:
                 async for chunk in source:
+                    await cache_file.write(chunk)
                     yield chunk
-            else:
-                async with await open_file(temp_path, "wb") as cache_file:
-                    async for chunk in source:
-                        await cache_file.write(chunk)
-                        yield chunk
 
-        if not skip_cache:
-            if os.path.exists(temp_path):
-                os.replace(temp_path, cache_path)
+        if os.path.exists(temp_path):
+            os.replace(temp_path, cache_path)
 
-                metadata = {
-                    "text": text, "voice": voice_name, "speed": speed,
-                    "format": format, "hash": cache_hash, "model": model_tier,
-                    "created_at": time.time()
-                }
-                try:
-                    async with await open_file(meta_path, "w") as f:
-                        await f.write(json.dumps(metadata, indent=2))
-                except (IOError, OSError) as e:
-                    logger.warning(f"Failed to save metadata: {e}")
+            metadata = {
+                "text": text, "voice": voice_name, "speed": speed,
+                "format": format, "hash": cache_hash, "model": model_tier,
+                "created_at": time.time()
+            }
+            try:
+                async with await open_file(meta_path, "w") as f:
+                    await f.write(json.dumps(metadata, indent=2))
+            except (IOError, OSError) as e:
+                logger.warning(f"Failed to save metadata: {e}")
 
-                if background_tasks and cache_manager.should_cleanup():
-                    background_tasks.add_task(cache_manager.cleanup)
+            if background_tasks and cache_manager.should_cleanup():
+                background_tasks.add_task(cache_manager.cleanup)
 
     except (IOError, OSError, RuntimeError) as e:
         raise HTTPException(status_code=500, detail=f"Audio generation failed: {str(e)}")

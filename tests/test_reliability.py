@@ -4,13 +4,13 @@ import os
 import shutil
 import subprocess
 import threading
-from queue import Queue
 from types import SimpleNamespace
 
 import pytest
 import torch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from pocket_tts_server import api, audio
@@ -23,7 +23,7 @@ class SilentModel:
     device = 'cpu'
     sample_rate = 24000
 
-    def get_state_for_audio_prompt(self, voice):
+    def get_state_for_audio_prompt(self, voice: str) -> dict[str, torch.Tensor]:
         return {}
 
     def generate_audio_stream(self, **kwargs):
@@ -40,10 +40,14 @@ def isolated_admission(monkeypatch):
 def test_cancelled_waiter_skips_voice_preparation(monkeypatch):
     prepared = threading.Event()
     model = SilentModel()
-    model.get_state_for_audio_prompt = lambda voice: prepared.set()
+    def record_voice_preparation(voice: str) -> dict[str, torch.Tensor]:
+        prepared.set()
+        return {}
+
+    model.get_state_for_audio_prompt = record_voice_preparation
     manager = ModelManager(_model=model, _device='cpu', _language='english')
     monkeypatch.setattr(audio, 'model_manager', manager)
-    queue = Queue()
+    queue = audio.AudioQueue()
     manager.acquire_lock()
     try:
         producer = audio._start_audio_producer(queue, 'alba', 'Hi.', model_tier='english-cpu')
@@ -59,7 +63,11 @@ def test_cancelled_during_load_skips_voice_preparation(monkeypatch):
     import pocket_tts
     entered, release, prepared = threading.Event(), threading.Event(), threading.Event()
     model = SilentModel()
-    model.get_state_for_audio_prompt = lambda voice: prepared.set()
+    def record_voice_preparation(voice: str) -> dict[str, torch.Tensor]:
+        prepared.set()
+        return {}
+
+    model.get_state_for_audio_prompt = record_voice_preparation
 
     def load(language):
         entered.set()
@@ -68,7 +76,7 @@ def test_cancelled_during_load_skips_voice_preparation(monkeypatch):
 
     monkeypatch.setattr(pocket_tts.TTSModel, 'load_model', staticmethod(load))
     monkeypatch.setattr(audio, 'model_manager', ModelManager(_model=SilentModel(), _language='english'))
-    queue = Queue()
+    queue = audio.AudioQueue()
     producer = audio._start_audio_producer(queue, 'alba', 'Hi.', model_tier='french-cpu')
     try:
         assert entered.wait(3)
@@ -101,9 +109,9 @@ def test_concurrent_language_requests_use_their_own_model(monkeypatch):
 
     monkeypatch.setattr(pocket_tts.TTSModel, 'load_model', staticmethod(load))
     monkeypatch.setattr(audio, 'model_manager', ModelManager(_model=Model('english'), _language='english', _device='cpu'))
-    first = audio._start_audio_producer(Queue(), 'alba', 'French.', model_tier='french-cpu')
+    first = audio._start_audio_producer(audio.AudioQueue(), 'alba', 'French.', model_tier='french-cpu')
     assert entered.wait(3)
-    second = audio._start_audio_producer(Queue(), 'alba', 'German.', model_tier='german-cpu')
+    second = audio._start_audio_producer(audio.AudioQueue(), 'alba', 'German.', model_tier='german-cpu')
     release.set()
     first.join(5)
     second.join(5)
@@ -151,12 +159,12 @@ def test_synthesis_capacity_rejects_and_releases(monkeypatch):
     monkeypatch.setattr(audio, 'synthesis_capacity', capacity)
     manager = ModelManager(_model=SilentModel(), _language='english')
     monkeypatch.setattr(audio, 'model_manager', manager)
-    queue = Queue()
+    queue = audio.AudioQueue()
     manager.acquire_lock()
     try:
         producer = audio._start_audio_producer(queue, 'alba', 'Hi.', model_tier='english-cpu')
         with pytest.raises(HTTPException) as error:
-            audio._start_audio_producer(Queue(), 'alba', 'Hi.', model_tier='english-cpu')
+            audio._start_audio_producer(audio.AudioQueue(), 'alba', 'Hi.', model_tier='english-cpu')
         assert error.value.status_code == 503
         queue.abort = True
         producer.join(3)
@@ -258,7 +266,7 @@ def test_ignored_sampling_fields_share_cache_key():
 def test_ignored_sampling_fields_are_not_set_on_model(monkeypatch):
     model = SilentModel()
     monkeypatch.setattr(audio, 'model_manager', ModelManager(_model=model, _device='cpu', _language='english'))
-    producer = audio._start_audio_producer(Queue(), 'alba', 'Hi.', model_tier='english-cpu', top_p=0.5, repetition_penalty=1.5)
+    producer = audio._start_audio_producer(audio.AudioQueue(), 'alba', 'Hi.', model_tier='english-cpu', top_p=0.5, repetition_penalty=1.5)
     producer.join(3)
     assert not producer.is_alive()
     assert not hasattr(model, 'top_p') and not hasattr(model, 'repetition_penalty')
@@ -269,7 +277,7 @@ def test_forwarded_header_does_not_change_rate_limit_identity(monkeypatch):
     monkeypatch.setattr(api, 'rate_limiter', SimpleNamespace(is_allowed=lambda ip: (seen.append(ip) or True, 0)))
     client = TestClient(api.app)
     for forwarded in ('first', 'second'):
-        assert client.get('/v1/formats', headers={'X-Forwarded-For': forwarded}).status_code == 200
+        assert client.post('/set_tts_settings', headers={'X-Forwarded-For': forwarded}, json={}).status_code == 200
     assert seen == ['testclient', 'testclient']
 
 
@@ -278,10 +286,11 @@ def test_websocket_connections_are_globally_bounded(monkeypatch):
     monkeypatch.setattr(api, 'model_manager', ModelManager(_model=SilentModel()))
     client = TestClient(api.app)
     with client.websocket_connect('/v1/audio/stream') as first:
-        with client.websocket_connect('/v1/audio/live') as rejected:
-            with pytest.raises(WebSocketDisconnect) as error:
-                rejected.receive_json()
-            assert error.value.code == 1013
+        with pytest.raises(WebSocketDenialResponse) as error:
+            with client.websocket_connect('/v1/audio/live'):
+                pytest.fail('Rejected connection completed its handshake')
+        assert error.value.status_code == 503
+        assert error.value.headers['retry-after'] == '5'
         first.send_json({'type': 'text.done'})
         assert first.receive_json()['status'] == 'session_ended'
     with client.websocket_connect('/v1/realtime') as recovered:
@@ -304,9 +313,11 @@ def test_websocket_phrases_are_rate_limited(monkeypatch):
         assert ws.receive_bytes() == b'\0\0'
         assert ws.receive_json()['status'] == 'done'
         ws.send_json({'type': 'text.append', 'text': 'Two.'})
-        with pytest.raises(WebSocketDisconnect) as error:
-            ws.receive_json()
-        assert error.value.code == 1013
+        error = ws.receive_json()
+        assert error['status'] == 'error' and error['code'] == 'rate_limited'
+        assert error['retryable'] is True and error['retry_after'] > 0
+        ws.send_json({'type': 'text.done'})
+        assert ws.receive_json()['status'] == 'session_ended'
 
 
 @pytest.mark.parametrize('path,payload', [
@@ -399,7 +410,11 @@ def test_http_disconnect_before_first_audio_cancels_waiting_producer(monkeypatch
     from starlette.requests import Request
     model = SilentModel()
     prepared = threading.Event()
-    model.get_state_for_audio_prompt = lambda voice: prepared.set()
+    def record_voice_preparation(voice: str) -> dict[str, torch.Tensor]:
+        prepared.set()
+        return {}
+
+    model.get_state_for_audio_prompt = record_voice_preparation
     manager = ModelManager(_model=model, _language='english', _device='cpu')
     monkeypatch.setattr(audio, 'model_manager', manager)
     monkeypatch.setattr(audio.settings, 'audio_cache_dir', str(tmp_path))
@@ -445,3 +460,49 @@ def test_http_disconnect_before_first_audio_cancels_waiting_producer(monkeypatch
         asyncio.run(run())
     finally:
         manager.release_lock()
+
+
+def test_handshake_rate_limit_denies_open_but_keeps_discovery_available(monkeypatch):
+    monkeypatch.setattr(api, 'rate_limiter', RateLimiter(requests_per_window=1))
+    monkeypatch.setattr(api, 'model_manager', ModelManager(_model=SilentModel()))
+    client = TestClient(api.app)
+    assert client.post('/set_tts_settings', json={}).status_code == 200
+    with pytest.raises(WebSocketDenialResponse) as error:
+        with client.websocket_connect('/v1/audio/stream'):
+            pytest.fail('Rate-limited connection completed its handshake')
+    assert error.value.status_code == 429
+    assert int(error.value.headers['retry-after']) > 0
+    for path in ('/health', '/v1/voices', '/v1/models'):
+        assert client.get(path).status_code == 200
+
+
+def test_rate_limit_keeps_active_and_queued_speech(monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(api, 'rate_limiter', RateLimiter(requests_per_window=3))
+    monkeypatch.setattr(api, 'model_manager', ModelManager(_model=SilentModel()))
+
+    async def generate(**kwargs):
+        yield kwargs['text'].encode()
+        if kwargs['text'] == 'One.':
+            assert await asyncio.to_thread(release.wait, 3)
+
+    monkeypatch.setattr(api, 'generate_audio', generate)
+    try:
+        with TestClient(api.app).websocket_connect('/v1/audio/stream') as ws:
+            def send(text, request_id):
+                ws.send_json({'type': 'text.append', 'text': text, 'request_id': request_id,
+                              'format': 'pcm', 'stream': True})
+            send('One.', '1')
+            assert ws.receive_json()['status'] == 'audio_start'
+            assert ws.receive_bytes() == b'One.'
+            send('Two.', '2')
+            send('Three.', '3')
+            error = ws.receive_json()
+            assert error['code'] == 'rate_limited' and error['request_id'] == '3'
+            release.set()
+            assert ws.receive_json()['request_id'] == ['1']
+            assert ws.receive_json()['request_id'] == ['2']
+            assert ws.receive_bytes() == b'Two.'
+            assert ws.receive_json()['status'] == 'done'
+    finally:
+        release.set()
