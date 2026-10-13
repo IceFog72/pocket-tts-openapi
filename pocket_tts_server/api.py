@@ -12,17 +12,20 @@ from functools import wraps
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .audio import generate_audio
+from .errors import InputError, error_details
 from .cache import cache_manager
 from .config import settings
 from .constants import CACHE_EXTENSIONS, DEFAULT_VOICES, MEDIA_TYPES, VOICE_MAPPING
 from .model_manager import model_manager
 from .models import ExportVoiceRequest, SpeechRequest
 from .rate_limiter import rate_limiter, websocket_capacity
-from .validation import _ffmpeg_available, check_ffmpeg, is_valid_voice_name, normalize_text
+from .validation import _ffmpeg_available, check_ffmpeg, is_valid_voice_name, normalize_text, resolve_voice
 from .voices import voice_lock
 
 POCKET_TTS_VERSION = package_version("pocket-tts")
@@ -116,6 +119,20 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+@app.exception_handler(InputError)
+async def input_error_handler(request: Request, exc: InputError):
+    details = error_details(exc)
+    return JSONResponse(status_code=exc.status_code,
+                        content={"detail": details['message'], "error": details})
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(request: Request, exc: RequestValidationError):
+    details = error_details(exc)
+    return JSONResponse(status_code=422,
+                        content={"detail": details['message'], "error": details})
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -214,6 +231,10 @@ async def audio_response(source, request: Request = None, **kwargs):
             if (await request.receive())["type"] == "http.disconnect":
                 return
 
+    if request is not None:
+        # Finish the request body before a cancellable receive watcher takes
+        # ownership. This also covers GET compatibility requests.
+        await request.body()
     first_task = asyncio.create_task(anext(source))
     disconnect_task = asyncio.create_task(disconnected()) if request is not None else None
     try:
@@ -245,14 +266,6 @@ async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks,
 
         if not model_manager.is_loaded:
             raise HTTPException(status_code=503, detail="TTS model not loaded")
-
-        v = data.voice
-        is_path_voice = os.path.isabs(v) and os.path.isfile(v)
-        if not is_path_voice:
-            with voice_lock:
-                known = is_valid_voice_name(v) or v.lower() in VOICE_MAPPING or v in VOICE_MAPPING
-            if not known:
-                raise HTTPException(status_code=400, detail="Invalid voice name")
 
         return await audio_response(
             generate_audio(
@@ -419,8 +432,10 @@ async def websocket_tts(websocket: WebSocket):
                     temperature=data.get("temperature", settings.temperature),
                     top_p=data.get("top_p", settings.top_p),
                     lsd_decode_steps=data.get("lsd_decode_steps", settings.lsd_decode_steps),
+                    stream=data.get("stream", False),
                 )
-                streaming = data.get("stream", False)
+                resolve_voice(request.voice)
+                streaming = request.stream
                 started = time.monotonic()
                 first_audio = None
                 total_bytes = 0
@@ -458,9 +473,13 @@ async def websocket_tts(websocket: WebSocket):
                     "first_audio_ms": round(first_audio * 1000, 1) if first_audio is not None else None,
                 })
             except Exception as exc:
-                logger.warning("WebSocket synthesis failed: %s", exc)
+                details = error_details(exc)
+                if details['retryable']:
+                    logger.exception("WebSocket synthesis failed")
+                else:
+                    logger.info("Rejected speech request: %s", details['message'])
                 await websocket.send_json({"status": "error", "request_id": request_id,
-                                           "error": str(exc)})
+                                           "error": details['message'], **details})
 
     worker = asyncio.create_task(synthesize())
     receiver = None
@@ -494,9 +513,29 @@ async def websocket_tts(websocket: WebSocket):
             if worker in done:
                 await worker
                 break
-            data = receiver.result()
-            receiver = None
-            kind = data.get("type")
+            current, receiver = receiver, None
+            try:
+                data = current.result()
+                if not isinstance(data, dict):
+                    raise InputError("Message must be a JSON object")
+                request_id = data.get("request_id")
+                if request_id is not None and (not isinstance(request_id, (str, int))
+                                                or isinstance(request_id, bool)
+                                                or len(str(request_id)) > 128):
+                    raise InputError("request_id must be a string or integer of at most 128 characters",
+                                     param="request_id")
+                kind = data.get("type")
+                if kind not in ("text.append", "text.delta", "text.done"):
+                    raise InputError("Unknown message type. Use text.append, text.delta or text.done", param="type")
+                if kind != "text.done" and not isinstance(data.get("text"), str):
+                    raise InputError("Text must be a string", param="text")
+            except (InputError, ValueError, TypeError, KeyError) as exc:
+                if not isinstance(exc, InputError):
+                    exc = InputError("Message must contain valid JSON", code="invalid_json")
+                details = error_details(exc)
+                await websocket.send_json({"status": "error", "request_id": None,
+                                           "error": details['message'], **details})
+                continue
             if kind == "text.delta" or (websocket.url.path.endswith("/live") and kind == "text.append"):
                 fragment = data.get("text", "")
                 if not isinstance(fragment, str):
@@ -546,17 +585,34 @@ async def websocket_realtime_tts(websocket: WebSocket):
         await websocket.close(code=1011)
         return
 
+    async def receive_message():
+        while True:
+            try:
+                message = await websocket.receive_json()
+                if not isinstance(message, dict):
+                    raise InputError("Message must be a JSON object")
+                return message
+            except (InputError, ValueError, TypeError, KeyError) as exc:
+                if not isinstance(exc, InputError):
+                    exc = InputError("Message must contain valid JSON", code="invalid_json")
+                await websocket.send_json({"type": "error", "error": error_details(exc)})
+
     try:
         # Session config
-        data = await websocket.receive_json()
-        session = data.get("session", {}) if data.get("type") == "session.update" else data
+        while True:
+            data = await receive_message()
+            session = data.get("session", {}) if data.get("type") == "session.update" else data
+            if isinstance(session, dict):
+                break
+            await websocket.send_json({"type": "error", "error": error_details(
+                InputError("Session must be a JSON object", param="session"))})
         voice = session.get("voice", "nova")
         fmt = session.get("format") or session.get("response_format", "mp3")
-        speed = float(session.get("speed", 1.0))
-        temperature = float(session.get("temperature", settings.temperature))
-        top_p = float(session.get("top_p", settings.top_p))
-        repetition_penalty = float(session.get("repetition_penalty", settings.repetition_penalty))
-        lsd_decode_steps = int(session.get("lsd_decode_steps", settings.lsd_decode_steps))
+        speed = session.get("speed", 1.0)
+        temperature = session.get("temperature", settings.temperature)
+        top_p = session.get("top_p", settings.top_p)
+        repetition_penalty = session.get("repetition_penalty", settings.repetition_penalty)
+        lsd_decode_steps = session.get("lsd_decode_steps", settings.lsd_decode_steps)
         model_tier = session.get("model", settings.model_tier)
 
         buffer = ""
@@ -578,11 +634,13 @@ async def websocket_realtime_tts(websocket: WebSocket):
                     chunk_count += 1
                     await websocket.send_bytes(chunk)
                 await websocket.send_json({"type": "response.audio.done"})
-            except Exception as e:
-                if "websocket" in str(e).lower() or "closed" in str(e).lower():
+            except (InputError, ValidationError) as exc:
+                await websocket.send_json({"type": "error", "error": error_details(exc)})
+            except Exception as exc:
+                if "websocket" in str(exc).lower() or "closed" in str(exc).lower():
                     raise
-                logger.warning(f"[Realtime] Generation error: {e}")
-                await websocket.send_json({"type": "error", "error": {"message": str(e)}})
+                logger.exception("Realtime generation failed")
+                await websocket.send_json({"type": "error", "error": error_details(exc)})
 
         async def drain_buffer():
             nonlocal buffer
@@ -598,7 +656,7 @@ async def websocket_realtime_tts(websocket: WebSocket):
         # Receive text incrementally
         while True:
             try:
-                data = await websocket.receive_json()
+                data = await receive_message()
             except WebSocketDisconnect:
                 break
             except Exception:
@@ -608,23 +666,37 @@ async def websocket_realtime_tts(websocket: WebSocket):
 
             if msg_type == "input_text.append":
                 text = data.get("text", "")
+                if not isinstance(text, str):
+                    await websocket.send_json({"type": "error", "error": error_details(
+                        InputError("Text must be a string", param="text"))})
+                    continue
                 if text:
                     buffer += normalize_text(text)
                     if len(buffer) > settings.max_input_length:
-                        raise ValueError("Text buffer exceeds maximum input length")
+                        buffer = ""
+                        await websocket.send_json({"type": "error", "error": error_details(
+                            InputError("Text buffer exceeds maximum input length", param="text"))})
+                        continue
                     await drain_buffer()
             elif msg_type == "input_text.done":
                 break
             elif msg_type == "session.update":
                 session = data.get("session", {})
+                if not isinstance(session, dict):
+                    await websocket.send_json({"type": "error", "error": error_details(
+                        InputError("Session must be a JSON object", param="session"))})
+                    continue
                 voice = session.get("voice", voice)
                 fmt = session.get("format", fmt)
-                speed = float(session.get("speed", speed))
-                temperature = float(session.get("temperature", temperature))
-                top_p = float(session.get("top_p", top_p))
-                repetition_penalty = float(session.get("repetition_penalty", repetition_penalty))
-                lsd_decode_steps = int(session.get("lsd_decode_steps", lsd_decode_steps))
+                speed = session.get("speed", speed)
+                temperature = session.get("temperature", temperature)
+                top_p = session.get("top_p", top_p)
+                repetition_penalty = session.get("repetition_penalty", repetition_penalty)
+                lsd_decode_steps = session.get("lsd_decode_steps", lsd_decode_steps)
                 model_tier = session.get("model", model_tier)
+            else:
+                await websocket.send_json({"type": "error", "error": error_details(
+                    InputError("Unknown message type", param="type"))})
 
         # Flush remaining buffer
         if buffer.strip():
@@ -634,10 +706,10 @@ async def websocket_realtime_tts(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.debug("[Realtime] Client disconnected")
-    except Exception as e:
-        logger.warning(f"[Realtime] Error: {e}")
+    except Exception as exc:
+        logger.exception("Realtime session failed")
         try:
-            await websocket.send_json({"type": "error", "error": {"message": str(e)}})
+            await websocket.send_json({"type": "error", "error": error_details(exc)})
         except Exception:
             pass
 
@@ -661,8 +733,6 @@ async def xtts_stream_get(
     v = voice or speaker_wav
     if not v:
         v = "nova"
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="text is required")
     if not model_manager.is_loaded:
         raise HTTPException(status_code=503, detail="TTS model not loaded")
     return await audio_response(
@@ -678,14 +748,17 @@ async def xtts_stream_get(
 @app.post("/v1/audio/speech/tts_to_audio")
 async def xtts_post(request: Request) -> StreamingResponse:
     """XTTS-compatible POST endpoint."""
-    data = await request.json()
+    try:
+        data = await request.json()
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise InputError("Request body must contain valid JSON", code="invalid_json") from exc
+    if not isinstance(data, dict):
+        raise InputError("Request body must be a JSON object")
     text = data.get("text", "")
     voice = data.get("speaker_wav") or data.get("voice", "nova")
     language = data.get("language", "en")
-    speed = float(data.get("speed", 1.0))
+    speed = data.get("speed", 1.0)
     fmt = data.get("format", "wav")
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="text is required")
     if not model_manager.is_loaded:
         raise HTTPException(status_code=503, detail="TTS model not loaded")
     return await audio_response(

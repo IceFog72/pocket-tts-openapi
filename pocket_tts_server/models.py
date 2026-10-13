@@ -1,12 +1,10 @@
 """Pydantic models for API requests and responses."""
-import logging
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from .config import settings
-
-logger = logging.getLogger(__name__)
+from .validation import sanitize_text_input, validate_model_name
 
 
 class SpeechRequest(BaseModel):
@@ -24,12 +22,21 @@ class SpeechRequest(BaseModel):
     @field_validator("model", mode="before")
     @classmethod
     def validate_model(cls, v: str) -> str:
-        if not v:
-            logger.debug("Empty model specified, falling back to settings.model_tier")
+        if v is None or v == "":
             return settings.model_tier
         return v
 
-    @field_validator("voice", mode="before")
+    @field_validator("model")
+    @classmethod
+    def check_model(cls, v: str) -> str:
+        return validate_model_name(v)
+
+    @field_validator("input")
+    @classmethod
+    def check_text(cls, v: str) -> str:
+        return sanitize_text_input(v)
+
+    @field_validator("voice")
     @classmethod
     def validate_voice(cls, v: str) -> str:
         return v.strip() if v else v

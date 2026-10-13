@@ -416,7 +416,12 @@ def test_http_disconnect_before_first_audio_cancels_waiting_producer(monkeypatch
     async def run():
         disconnect = asyncio.Event()
 
+        body_sent = False
         async def receive():
+            nonlocal body_sent
+            if not body_sent:
+                body_sent = True
+                return {'type': 'http.request', 'body': b'', 'more_body': False}
             await disconnect.wait()
             return {'type': 'http.disconnect'}
 

@@ -18,17 +18,20 @@ from pathlib import Path
 import torch
 from anyio import open_file
 from fastapi import BackgroundTasks, HTTPException
+from pydantic import ValidationError
 
+import soundfile
 import safetensors.torch
 from pocket_tts.modules.stateful_module import init_states
 
 from .cache import cache_manager
 from .config import settings
-from .constants import CACHE_EXTENSIONS, FFMPEG_FORMATS, MEDIA_TYPES, VOICE_MAPPING
+from .constants import FFMPEG_FORMATS
+from .errors import InputError, error_details
+from .models import SpeechRequest
 from .model_manager import model_manager
 from .rate_limiter import synthesis_capacity
-from .validation import _ffmpeg_available, is_valid_voice_name, sanitize_text_input
-from .voices import voice_lock
+from .validation import _ffmpeg_available, resolve_voice
 
 logger = logging.getLogger(__name__)
 
@@ -170,15 +173,20 @@ def _start_audio_producer(
                     if model_manager.device != "cpu":
                         model_manager.move_to_device("cpu")
 
-                # Backward compat: detect old-format safetensors with {"audio_prompt": ...}
-                if (
-                    voice_name.endswith(".safetensors")
-                    and os.path.isfile(voice_name)
-                    and _is_legacy_safetensors(voice_name)
-                ):
-                    model_state = _load_legacy_safetensors(tts_model, voice_name)
-                else:
-                    model_state = tts_model.get_state_for_audio_prompt(voice_name)
+                try:
+                    # Backward compat: detect old-format safetensors with {"audio_prompt": ...}
+                    if (
+                        voice_name.endswith(".safetensors")
+                        and os.path.isfile(voice_name)
+                        and _is_legacy_safetensors(voice_name)
+                    ):
+                        model_state = _load_legacy_safetensors(tts_model, voice_name)
+                    else:
+                        model_state = tts_model.get_state_for_audio_prompt(voice_name)
+
+                except (OSError, soundfile.SoundFileError, safetensors.SafetensorError) as exc:
+                    raise InputError("Voice reference could not be read. Choose another voice or replace its WAV/embedding",
+                                     code="invalid_voice_file", param="voice", status_code=422) from exc
 
                 parts = re.split(r'(?<=[.!?])\s+', text.strip())
 
@@ -209,8 +217,13 @@ def _start_audio_producer(
             finally:
                 model_manager.release_lock()
         except Exception as e:
+            if getattr(queue, "abort", False):
+                return
             queue.error = e
-            logger.error(f"Audio generation failed for voice {voice_name}: {e}")
+            if isinstance(e, InputError):
+                logger.info("Rejected voice reference: %s", e.detail)
+            else:
+                logger.error(f"Audio generation failed for voice {voice_name}: {e}")
             try:
                 queue.put(e, timeout=settings.eof_timeout)
             except Full:
@@ -424,6 +437,8 @@ async def _generate_audio_core(
                     await asyncio.to_thread(writer_thread.join, 5)
             return
 
+    except InputError:
+        raise
     except Exception as e:
         logger.exception(f"Error streaming audio format {format}: {e}")
         raise
@@ -455,19 +470,15 @@ async def generate_audio(
         raise HTTPException(status_code=503, detail="TTS model not loaded")
 
     try:
-        text = sanitize_text_input(text)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    if not is_valid_voice_name(voice) and voice not in VOICE_MAPPING and not (os.path.isabs(voice) and os.path.isfile(voice)):
-        raise HTTPException(status_code=400, detail="Invalid voice name")
-
-    v_lower = voice.lower()
-    with voice_lock:
-        if v_lower in VOICE_MAPPING:
-            voice_name = VOICE_MAPPING[v_lower]
-        else:
-            voice_name = VOICE_MAPPING.get(voice, voice)
+        request = SpeechRequest(input=text, voice=voice, model=model_tier,
+                                response_format=format, speed=speed, temperature=temperature,
+                                lsd_decode_steps=lsd_decode_steps)
+    except ValidationError as exc:
+        details = error_details(exc)
+        raise InputError(details['message'], param=details['param']) from exc
+    text, speed, format = request.input, request.speed, request.response_format
+    model_tier = request.model
+    voice_name = resolve_voice(request.voice)
 
     # Skip caching for WebSocket streaming or when explicitly requested
     if skip_cache:

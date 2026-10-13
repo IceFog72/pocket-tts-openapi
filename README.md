@@ -114,6 +114,20 @@ Live mode defaults to streaming PCM. It collects text until punctuation, 120 cha
 
 Requests are synthesized sequentially. The queue holds up to 32 phrases; overload closes the socket with code 1013. Disconnect cancels active delivery and discards queued requests. Synthesis failures produce `status: "error"` with an error message.
 
+## Invalid input
+
+Voice names must match a built-in voice, an OpenAI alias, or a loaded custom voice. Matching is case-insensitive. Existing absolute WAV and safetensors paths remain supported. Unknown names are never passed to the audio decoder as filenames, and the server does not silently substitute another voice.
+
+HTTP errors include a readable `detail` and an `error` object with `code`, `param`, `message`, and `retryable`. Unknown or unavailable voices return 404. Malformed OpenAI request fields return 422; manually parsed XTTS fields return 400. Unreadable voice references return 422 with `invalid_voice_file`.
+
+Streaming WebSocket errors preserve the string `error` field and add `code`, `param`, `message`, and `retryable`. For example, a request for an unavailable voice name receives:
+
+```json
+{"status":"error","request_id":"r1","error":"Unknown voice 'Nilou'. Use /v1/voices to list available voices","code":"unknown_voice","param":"voice","message":"Unknown voice 'Nilou'. Use /v1/voices to list available voices","retryable":false}
+```
+
+Correct the flagged field before retrying an error with `retryable: false`. Malformed JSON, wrong message types, invalid field types, unsupported formats/models, empty cleaned text, and out-of-range numeric settings are rejected before synthesis. The streaming socket remains usable for the next request. Unexpected engine failures return a generic message to clients and retain diagnostics in the server logs.
+
 ## Models and generation settings
 
 Model identifiers use `<language>-<device>`, such as `english-cpu` or `french-gpu`. Query `/v1/models` for the variants installed on your server.
