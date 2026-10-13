@@ -21,7 +21,8 @@ def _load_ini(path: str = "config.ini") -> dict:
             "security": {
                 "allowed_origins": str, "rate_limit_requests": int,
                 "rate_limit_window": int, "enable_high_priority": bool,
-                "model_load_timeout": int,
+                "model_load_timeout": int, "max_websocket_connections": int,
+                "max_pending_syntheses": int,
             },
             "validation": {"max_input_length": int, "min_input_length": int},
             "audio": {
@@ -83,7 +84,7 @@ class Settings(BaseSettings):
     default_sample_rate: int = 24000
 
     # Generation settings
-    temperature: float = _ini.get("temperature", 0.7)
+    temperature: float = _ini.get("temperature", 0.3)
     top_p: float = _ini.get("top_p", 0.95)
     repetition_penalty: float = _ini.get("repetition_penalty", 1.1)
     lsd_decode_steps: int = _ini.get("lsd_decode_steps", 2)
@@ -108,6 +109,8 @@ class Settings(BaseSettings):
     allowed_origin_regex: str = ""
     rate_limit_requests: int = _ini.get("rate_limit_requests", 120)
     rate_limit_window: int = _ini.get("rate_limit_window", 60)
+    max_websocket_connections: int = _ini.get("max_websocket_connections", 8)
+    max_pending_syntheses: int = _ini.get("max_pending_syntheses", 32)
     enable_high_priority: bool = _ini.get("enable_high_priority", True)
     model_load_timeout: int = _ini.get("model_load_timeout", 300)
 

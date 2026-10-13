@@ -18,8 +18,6 @@ class ModelManager:
     _sample_rate: Optional[int] = None
     _language: Optional[str] = None
     _lock: threading.RLock = field(default_factory=threading.RLock)
-    _loading: bool = False
-    _load_event: threading.Event = field(default_factory=threading.Event)
 
     @property
     def model(self):
@@ -28,26 +26,29 @@ class ModelManager:
 
     @property
     def device(self) -> Optional[str]:
-        with self._lock:
-            return self._device
+        return self._device
 
     @property
     def sample_rate(self) -> int:
-        with self._lock:
-            return self._sample_rate or settings.default_sample_rate
+        return self._sample_rate or settings.default_sample_rate
 
     @property
     def language(self) -> Optional[str]:
-        with self._lock:
-            return self._language
+        return self._language
 
     @property
     def is_loaded(self) -> bool:
-        with self._lock:
-            return self._model is not None
+        return self._model is not None
 
-    def acquire_lock(self):
-        self._lock.acquire()
+    @property
+    def voice_cloning(self) -> bool:
+        # Metadata reads must not wait behind an entire synthesis. A local
+        # reference stays valid if another thread replaces the model.
+        model = self._model
+        return bool(getattr(model, "has_voice_cloning", False))
+
+    def acquire_lock(self, timeout: float = -1) -> bool:
+        return self._lock.acquire(timeout=timeout)
 
     def release_lock(self):
         self._lock.release()
@@ -88,75 +89,39 @@ class ModelManager:
 
         from pocket_tts import TTSModel
 
-        self._lock.acquire()
-        try:
+        # Keep selection, loading and publication under the same ownership as
+        # synthesis. The loader thread never accesses this manager's lock.
+        with self._lock:
             if self._model is not None and self._language == target_language:
                 return
-            if self._loading:
-                # Another thread is loading — wait outside the lock
-                self._lock.release()
-                try:
-                    if not self._load_event.wait(timeout=timeout):
-                        raise TimeoutError("Model loading timed out")
-                finally:
-                    self._lock.acquire()
-                return
-            self._loading = True
-            self._load_event.clear()
-        finally:
-            self._lock.release()
-
-        try:
-            logger.info(f"Loading TTS model (timeout: {timeout}s)...")
+            logger.info("Loading TTS model %s (timeout: %ss)...", target_language, timeout)
             load_result: Dict[str, Any] = {"model": None, "error": None}
 
             def _do_load():
                 try:
-                    # Patch again just in case it was imported during another thread
-                    import sys
-                    if "pocket_tts.models.tts_model" in sys.modules:
-                        sys.modules["pocket_tts.models.tts_model"].audio_read = pt_audio.audio_read
-
                     load_result["model"] = TTSModel.load_model(language=target_language)
-                except Exception as e:
-                    load_result["error"] = e
+                except Exception as exc:
+                    load_result["error"] = exc
 
             load_thread = threading.Thread(target=_do_load, daemon=True)
             load_thread.start()
             load_thread.join(timeout=timeout)
-
             if load_thread.is_alive():
                 raise TimeoutError(f"Model loading exceeded {timeout}s timeout")
-            if load_result["error"]:
+            if load_result["error"] is not None:
                 raise load_result["error"]
 
-            with self._lock:
-                if self._model is not None:
-                    logger.info(f"Switching language from {self._language} to {target_language}")
-                    del self._model
-                    self._model = None
-                    import gc
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                self._model = load_result["model"]
-
-                self._device = self._model.device
-                self._sample_rate = getattr(self._model, "sample_rate", settings.default_sample_rate)
-                self._language = target_language
-                self._loading = False
-                self._load_event.set()
-
-            logger.info(f"Pocket TTS loaded | Device: {self._device} | Sample Rate: {self._sample_rate} | Language: {self._language}")
-
-        except Exception as e:
-            with self._lock:
-                self._loading = False
-                self._load_event.set()
-                if self._model is None:
-                    self._language = None
-            logger.error(f"Failed to load TTS model: {e}")
-            raise
+            # Validate before replacing the previous working model. A failed or
+            # timed-out loader cannot publish a result after this method exits.
+            new_model = load_result["model"]
+            device = new_model.device
+            sample_rate = getattr(new_model, "sample_rate", settings.default_sample_rate)
+            self._model = new_model
+            self._device = device
+            self._sample_rate = sample_rate
+            self._language = target_language
+            logger.info("Pocket TTS loaded | Device: %s | Sample Rate: %s | Language: %s",
+                        device, sample_rate, target_language)
 
     def move_to_device(self, target_device: str) -> None:
         with self._lock:

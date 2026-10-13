@@ -18,7 +18,6 @@ audio_cache/
 
 # Voice files
 voices/
-embeddings/
 
 # Distribution / packaging
 *.egg-info/
@@ -32,12 +31,8 @@ build/
 *.swo
 *~
 GEMINI.md
-test_browser.html
 ARCHITECTURE.md
 server.log
-node_modules/
-test_streaming.js
-server.log
-test_pocketapi.py
-test_websocket.py
-test_ws_streaming.py
+
+# Test artifacts
+.pytest_cache/

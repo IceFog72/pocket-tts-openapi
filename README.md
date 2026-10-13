@@ -1,194 +1,236 @@
 # Pocket TTS OpenAPI
 
-**Fast, local, multi-protocol Text-to-Speech server** powered by [Kyutai's Pocket TTS](https://kyutai.org/blog/2026-01-13-pocket-tts).
+Local speech generation with [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts), an OpenAI-compatible HTTP API, XTTS-compatible endpoints, and WebSocket streaming.
 
-- 🚀 **Runs at 1.5x real-time** on older CPUs (tested on Haswell)
-- 🎭 **Voice cloning support** - use your own `.wav` files
-- ⚡ **Optimized Loading** - converts voices to `.safetensors` for instant startup
-- 📦 **Audio caching** - instant response for repeated phrases
-- 🛰️ **Streaming Support** - real-time audio generation
-- 🛡️ **Stuttering Protection** - runs with High Priority to prevent choppiness under load
-- 🌐 **Multi-protocol**: OpenAI standard, XTTS-compatible, WebSocket, and GET streaming
-- 🤖 **SillyTavern ready** - works with XTTSv2 and OpenAI Compatible TTS providers
+Uses Pocket TTS **3.3.x**, with **English** and **temperature 0.3** by default. Stable language names follow the default checkpoints shipped with the installed Pocket TTS version. CPU is the default device; CUDA is optional.
 
-## Installation
+## Install and start
 
-### 1. Download Project
+Install Python 3.10 or newer and FFmpeg. Python 3.12 is used in the current local setup. FFmpeg is needed for encoded formats and speed changes.
+
 ```bash
 git clone https://github.com/IceFog72/pocket-tts-openapi
 cd pocket-tts-openapi
+bash install.sh
+bash start.sh
 ```
 
-### 2. Setup & Run
+On Windows, run `install.bat`, then `start.bat`.
 
-#### Windows
-1. Run `install.bat` - sets up Python venv and installs dependencies
-2. Run `start.bat` - starts the server (automatically sets **High Priority**)
+The installer creates `venv` and installs the project. The first model load downloads weights from Hugging Face. For voice cloning, complete any access requirements on the [Pocket TTS model page](https://huggingface.co/kyutai/pocket-tts) and authenticate with Hugging Face if prompted.
 
-#### Linux
-1. Run `chmod +x install.sh start.sh update.sh` (first time only)
-2. Run `./install.sh` - sets up Python venv and installs dependencies
-3. Run `./start.sh` - starts the server
+The default address is `http://localhost:8005`. Settings live in `config.ini`. The default bind address is `0.0.0.0`, so the server also listens on network interfaces.
 
-### 3. Updating
-To get the latest version of the project:
-- **Windows**: Run `update.bat`
-- **Linux**: Run `./update.sh`
+Check the running engine:
 
----
+```bash
+curl http://localhost:8005/health
+```
 
-## API Endpoints
+The health response includes `pocket_tts_version`, `language`, `temperature`, `model_loaded`, and `sample_rate`. Its `version` field identifies the wrapper API, not the Pocket TTS engine.
 
-**Server:** `http://localhost:8005`
+## Choose a playback path
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Server status |
-| POST | `/v1/audio/speech` | Generate audio (OpenAI standard) |
-| GET | `/tts_stream?text=...&voice=...` | Stream audio via GET |
-| POST | `/tts_to_audio/` | Generate audio (XTTS format) |
-| GET | `/v1/voices` | Voice list (OpenAI format) |
-| GET | `/speakers` | Voice list (XTTS format) |
-| WS | `/v1/audio/stream` | WebSocket streaming |
+| Path | Use |
+| --- | --- |
+| WebSocket with PCM | Audio as it is generated, with buffering controlled by the client |
+| OpenAI-compatible HTTP | Existing speech clients and audio downloads |
+| XTTS-compatible HTTP | Clients expecting XTTS-style endpoints |
 
-### OpenAI Standard
+HTTP responses stream bytes, but a client may wait for a complete file before playback. For low startup latency in a browser, use WebSocket PCM and Web Audio. Raw PCM does not depend on a browser's MP3, WebM, or MediaSource support.
+
+Adaptive buffering belongs to the playback client. The SillyTavern extension schedules incoming PCM with Web Audio and adjusts its buffer as audio arrives. Browser autoplay still requires a user gesture. Model loading, voice preparation, and generation speed affect time to first audio; streaming does not remove those costs.
+
+## HTTP API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Engine and server status |
+| GET | `/v1/models` | Available model identifiers |
+| GET | `/v1/voices` | Available voices |
+| GET | `/v1/formats` | Supported output formats |
+| POST | `/v1/audio/speech` | OpenAI-compatible speech generation |
+| GET | `/tts_stream` | XTTS-style streaming with query parameters |
+| POST | `/tts_to_audio/` | XTTS-style speech generation |
+| GET | `/speakers` | XTTS-style voice list |
+| POST | `/v1/audio/export-voice` | Export a local WAV voice to a cached embedding |
+| POST | `/cache/clear` | Clear generated audio files |
+
+Generate a WAV file:
 
 ```bash
 curl http://localhost:8005/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{"input": "Hello!", "voice": "nova", "response_format": "mp3"}' \
-  --output hello.mp3
+  -H 'Content-Type: application/json' \
+  -d '{"model":"english-cpu","input":"Hello there.","voice":"alba","response_format":"wav"}' \
+  --output hello.wav
 ```
 
-### XTTS-Compatible (GET Streaming)
+XTTS-style request:
 
 ```bash
-curl "http://localhost:8005/tts_stream?text=Hello&voice=nova&format=mp3" \
+curl 'http://localhost:8005/tts_stream?text=Hello&voice=alba&format=mp3' \
   --output hello.mp3
 ```
 
-### WebSocket
+Output formats: `wav`, `pcm`, `mp3`, `opus`, `aac`, `flac`, and `webm`. PCM is signed 16-bit little-endian mono without a WAV header. The current engine outputs 24 kHz audio.
 
-```python
-import asyncio, json, websockets
+## WebSocket streaming
 
-async def stream_tts():
-    async with websockets.connect("ws://localhost:8005/v1/audio/stream") as ws:
-        await ws.send(json.dumps({"text": "Hello", "voice": "nova", "format": "mp3"}))
-        while True:
-            msg = await ws.recv()
-            if isinstance(msg, bytes):
-                with open("out.mp3", "ab") as f:
-                    f.write(msg)
-            elif json.loads(msg).get("status") == "done":
-                break
+### Complete sentences
 
-asyncio.run(stream_tts())
+Connect to `ws://localhost:8005/v1/audio/stream`. Send each complete phrase with `stream: true` and an explicit format:
+
+```json
+{"type":"text.append","request_id":"r1","text":"Hello there.","voice":"alba","model":"english-cpu","format":"pcm","stream":true}
 ```
 
----
+For each request, the server sends:
 
-## SillyTavern Integration
+1. JSON with `status: "audio_start"`, `request_id: ["r1"]`, `format`, `sample_rate`, and `channels`.
+2. Binary audio chunks in generation order.
+3. JSON with `status: "done"`, the request ID array, `audio_duration`, `gen_time`, and `first_audio_ms`.
 
-The server works with SillyTavern in three ways:
+Use the sample rate from `audio_start` when decoding PCM. Network chunks can split a 16-bit sample; retain a trailing byte for the next chunk. Encoded-format durations are estimates; PCM duration comes from its byte count.
 
-### 1. PocketTTS WebSocket Extension (Recommended)
+Send this after the last request in a reply:
 
-The **[SillyTavern-PocketTTS-WebSocket](https://github.com/IceFog72/SillyTavern-PocketTTS-WebSocket)** extension provides the best experience:
+```json
+{"type":"text.done"}
+```
 
-- Persistent WebSocket connection — no reconnect overhead per sentence
-- Sentence-split generation — each sentence gets exact audio duration, no gaps
-- Built-in TTS playback bar with seek, volume, speed controls
-- Model selection (CPU/GPU, fast/quality)
-- Voice auto-discovery
-- Streaming Response via async generator — audio plays while server generates
+The server sends `status: "session_ended"` after queued requests finish. The socket stays open for the next reply. Without `stream: true`, the regular endpoint collects the audio before sending it.
 
-### 2. Built-in XTTSv2 Provider
+### Text arriving in fragments
 
-Use SillyTavern's built-in XTTSv2 provider — set endpoint to `http://host:8005`.
+Connect to `ws://localhost:8005/v1/audio/live`. Preserve spaces between fragments:
 
-### 3. Built-in OpenAI Compatible Provider
+```json
+{"type":"text.append","request_id":"r1","text":"Hello ","voice":"alba"}
+{"type":"text.append","request_id":"r1","text":"there.","voice":"alba"}
+{"type":"text.done"}
+```
 
-Use SillyTavern's built-in OpenAI Compatible provider — set endpoint to `http://host:8005/v1/audio/speech`.
+Live mode defaults to streaming PCM. It collects text until punctuation, 120 characters, or 120 ms of inactivity, then queues a phrase. `text.done` flushes the remainder. Each flushed phrase gets its own `audio_start` and `done`; multiple phrases can share the supplied request ID. The regular endpoint also accepts `text.delta` for this buffering behavior.
 
-| Provider | Set endpoint to | Voices auto-discovered | Sentence streaming |
-|----------|----------------|----------------------|-------------------|
-| **PocketTTS Extension** | `http://host:8005` | Yes | Yes |
-| **XTTSv2** | `http://host:8005` | Yes | No |
-| **OpenAI Compatible** | `http://host:8005/v1/audio/speech` | Yes | No |
+Requests are synthesized sequentially. The queue holds up to 32 phrases; overload closes the socket with code 1013. Disconnect cancels active delivery and discards queued requests. Synthesis failures produce `status: "error"` with an error message.
 
----
+## Models and generation settings
 
-## 🖥️ Ice Open TTS Proxy (GUI & AI Agent Bridge)
+Model identifiers use `<language>-<device>`, such as `english-cpu` or `french-gpu`. Query `/v1/models` for the variants installed on your server.
 
-For a desktop experience and AI integration, use the **Ice Open TTS Proxy**.
+Stable languages are `english`, `french`, `german`, `spanish`, `portuguese`, `italian`, and `dutch`. Larger `*_24l` variants are optional. In Pocket TTS 3.3.0, the default English configuration uses the September 2026 checkpoint.
 
-- 🎨 **Desktop GUI**: Text input, voice selection, playback controls.
-- ⚡ **Live Mode**: Speaks as you type with real-time setting sync.
-- 🤖 **AI Agent Bridge**: OpenAI-compatible API server on port 8181.
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `temperature` | `0.3` | Sampling randomness; higher values do not reliably increase emotion |
+| `lsd_decode_steps` | `2` | Legacy API name mapped to Pocket TTS's `sampler_decode_steps` |
+| `speed` | `1.0` | Playback speed transformation; accepted range 0.25–4.0 |
 
-### Launching the Proxy
-1. Ensure the main TTS server is running (Step 2 above).
-2. Go to the `ice-open-tts-test-proxy/` directory.
-3. **Windows**: Run `start_ice_gui.bat`
-4. **Linux**: Run `./start_ice_gui.sh`
+Omit temperature to use the server default. Long text is split for generation. The default maximum input length is 4096 characters.
 
-See **[AGENTS.md](ice-open-tts-test-proxy/AGENTS.md)** for detailed AI Agent integration.
+`top_p` and `repetition_penalty` remain accepted for older clients, but Pocket TTS 3.3 ignores them. They do not affect generation or create separate cache entries.
 
----
+## Custom voices
 
-## Features
+Built-in voices: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, and `azelma`. OpenAI names `alloy`, `echo`, `fable`, `onyx`, `nova`, and `shimmer` are aliases for Pocket TTS voices.
 
-### Built-in Voices
-- **Pocket TTS**: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`
-- **OpenAI aliases**: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`
-- **Custom**: place `.wav` files in `voices/` (auto-converted to `.safetensors`)
+Place a reference recording in `voices/`, for example `voices/Mona.wav`, then restart the server. Its filename stem becomes the voice ID: `Mona`. The server exports new WAV voices to `embeddings/Mona.safetensors` and reuses that file on later starts. Existing embeddings take precedence over matching WAV files.
 
-### Voice Cloning & Embeddings
+### Recording format and length
 
-- `voices/`: Place your source `.wav` files here (~10 seconds for best results).
-- `embeddings/`: Optimized `.safetensors` are stored here for instant loading.
+Recommended preparation:
 
-#### Setup Authentication
-1. Accept license at https://huggingface.co/kyutai/pocket-tts
-2. Login: https://huggingface.co/docs/huggingface_hub/guides/cli
-3. Restart the server
+- WAV, signed 16-bit PCM, mono, 24 kHz. This matches the engine's processing format; higher-rate source recordings can be converted.
+- Start with 10–15 seconds of actual speech. This is a practical starting point, not a required minimum or a guaranteed optimum.
+- One speaker, a few complete sentences, and consistent delivery.
+- No music, overlapping voices, clipping, strong echo, or long silence. Avoid heavy processing that damages speech.
 
-### Audio Quality & Performance
-- **High Priority Mode**: Auto-runs as High Priority on Windows.
-- **Quality Parameters**: `temperature` (0.0-2.0), `lsd_decode_steps` (1-50).
-- **Large Block Handling**: Auto-splits long text into sentences.
-- **Model Tiers**: Multi-language support via `<language>-<device>` format (e.g., `english-cpu`, `french_24l-gpu`, `spanish-cuda`). Legacy endpoints also fall back gracefully.
+Automatic export truncates references to the first 30 seconds. Choose a clean excerpt rather than supplying a long recording.
 
-### Audio Caching
-- Auto-caches generated files (default: 10).
-- Cache includes voice, text, and quality parameters.
-- Cache hit = instant response.
+Convert a recording to a new file:
 
-## Troubleshooting
+```bash
+ffmpeg -i recording.flac -ac 1 -ar 24000 -c:a pcm_s16le voices/Mona.wav
+```
 
-- **401 Unauthorized** → https://huggingface.co/docs/huggingface_hub/guides/cli
-- **Port conflict** → Server auto-selects next free port
-- **Slow first run** → Downloads ~236MB model
+To regenerate an embedding after replacing its source WAV:
 
-## Technical Notes
+```bash
+curl http://localhost:8005/v1/audio/export-voice \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"Mona","truncate":true}'
+```
 
-- **Platform**: Windows and Linux
-- **Dependencies**: Python 3.10+, FFmpeg (for MP3/AAC/etc)
-- **Cache**: `./audio_cache/`
-- **Model cache**: `~/.cache/huggingface`
+Embeddings avoid re-encoding the reference recording on each use. They do not eliminate speech generation time. See the [upstream voice export documentation](https://kyutai-labs.github.io/pocket-tts/CLI%20Commands/export_voice/).
 
-### GPU VRAM Overhead (CUDA Context)
-When using a `-gpu` model, you may notice a lingering ~170 MB of VRAM usage even after the TTS generation has finished and the model weights have been purged. **This is not a memory leak.**
+### Emotion and delivery
 
-Whenever a PyTorch application initializes the GPU for the first time, the NVIDIA driver creates a "CUDA context" for that Python process. This context loads essential GPU libraries (like cuBLAS/cuDNN handles) and driver state into VRAM. Depending on your driver version and GPU architecture, this base footprint is typically between 150 MB and 300 MB.
+Pocket TTS conditions speech on the reference voice's style and prosody. It has no dedicated emotion parameter in the installed version. For selectable delivery, prepare separate references of the same speaker, such as `Mona-neutral.wav`, `Mona-warm.wav`, and `Mona-excited.wav`, then choose the corresponding voice ID.
 
-This overhead is a hard architectural limitation of PyTorch and CUDA. Once a Python process creates a CUDA context, that memory is locked to the process until the application itself is shut down. However, the heavy components (the 1GB+ TTS model weights) are successfully freed when switching to a `-cpu` model, leaving the vast majority of your VRAM completely free for other tasks.
+Keep one consistent style per reference and compare generated samples. Emotion transfer varies; temperature is not an emotion-strength control. Text tags such as `[angry]` are not a supported control interface and may be read aloud. [Kyutai's technical report](https://kyutai.org/pocket-tts-technical-report/) describes reference conditioning.
 
-## Feedback
+## SillyTavern
 
-Discord: [https://discord.gg/2tJcWeMjFQ](https://discord.gg/2tJcWeMjFQ) • SillyTavern Discord
+The [PocketTTS WebSocket extension](https://github.com/IceFog72/SillyTavern-PocketTTS-WebSocket) connects to `http://host:8005` and uses a persistent socket for sentence playback.
 
-[Ko-fi](https://ko-fi.com/icefog72) • [Patreon](https://www.patreon.com/cw/IceFog72)
+Its streaming choices are **Auto** and **Off**. Auto prefers PCM with adaptive buffering; Off uses buffered audio. The playback bar supports pause/resume, volume, speed, and seeking within received audio. When another TTS provider is selected, the bar controls SillyTavern's audio element and uses its native queue controls for skip and stop.
 
-Inspired by [kyutai-tts-openai-api](https://github.com/dwain-barnes/kyutai-tts-openai-api)
+For SillyTavern's built-in XTTSv2 provider, use `http://host:8005`. For an OpenAI-compatible provider, configure its speech URL as `http://host:8005/v1/audio/speech`, or its base URL as `http://host:8005/v1` if the client appends `/audio/speech` itself.
+
+After updating the extension, reload SillyTavern to load its new scripts.
+
+## Request limits
+
+Limits in `config.ini` apply across clients:
+
+- `rate_limit_requests = 30` per IP over `rate_limit_window = 60` seconds. HTTP requests, WebSocket connections, and submitted WebSocket phrases consume this budget. Live text fragments are charged when they become a phrase.
+- `max_websocket_connections = 8` across both streaming routes and the legacy realtime route. Each regular/live socket queues at most 32 phrases.
+- `max_pending_syntheses = 32` bounds active and waiting synthesis producers across HTTP and WebSocket requests. Excess work is rejected rather than creating more waiting threads.
+
+Overloaded or rate-limited sockets close with code 1013. A client should wait before reconnecting. Limits can be increased for longer replies or multiple users.
+
+Rate limiting uses the connection's resolved client address. Raw `X-Forwarded-For` headers do not override it. Behind a reverse proxy, configure Uvicorn's trusted proxy addresses with `FORWARDED_ALLOW_IPS`; trust only the actual proxy.
+
+A generation or encoder failure does not publish a cache entry. Once HTTP audio bytes have started, a later failure terminates the response stream rather than changing its HTTP status. WebSocket requests report an error instead of successful completion.
+
+## Storage and troubleshooting
+
+| Location | Contents |
+| --- | --- |
+| `config.ini` | Server, generation, and cache settings |
+| `voices/` | Source WAV references |
+| `embeddings/` | Exported voice states |
+| `audio_cache/` | Generated HTTP audio cache; default limit 10 files |
+| Hugging Face cache | Downloaded model weights |
+
+WebSocket requests bypass the generated-audio cache.
+
+- **Model download or authorization fails:** check Hugging Face access, credentials, network availability, and startup logs.
+- **First speech is slower:** model loading and initial voice preparation add work. Reuse the running server and cached voice embeddings.
+- **Encoded audio or speed changes fail:** check that `ffmpeg` is available on `PATH`.
+- **A replaced WAV sounds unchanged:** regenerate its embedding using the export endpoint.
+- **Browser receives audio but stays silent:** allow playback with a click and check the selected provider and output device.
+- **Port already occupied:** `start.sh` offers restart or a different port; check the actual listening address in its logs.
+
+## Verification
+
+Install test dependencies in the project environment and run the server tests:
+
+```bash
+venv/bin/python -m pip install pytest httpx
+venv/bin/python -m pytest tests
+```
+
+Measure WebSocket time to first audio without playing sound:
+
+```bash
+venv/bin/python -m tests.benchmark_streaming
+```
+
+The benchmark starts a temporary server on a free local port, loads the model, measures three uncached requests, and shuts down. Pass `--voice /absolute/path/to/voice.safetensors` to test a prepared voice. Results depend on hardware, model, voice, and system load.
+
+## Links
+
+[Upstream Pocket TTS](https://github.com/kyutai-labs/pocket-tts) · [Discord](https://discord.gg/2tJcWeMjFQ) · [Ko-fi](https://ko-fi.com/icefog72)
+
+Inspired by [kyutai-tts-openai-api](https://github.com/dwain-barnes/kyutai-tts-openai-api).

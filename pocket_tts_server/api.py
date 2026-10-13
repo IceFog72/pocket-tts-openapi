@@ -5,8 +5,10 @@ import logging
 import os
 import re
 import time
+from importlib.metadata import version as package_version
 from pathlib import Path
 from contextlib import asynccontextmanager
+from functools import wraps
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -19,9 +21,11 @@ from .config import settings
 from .constants import CACHE_EXTENSIONS, DEFAULT_VOICES, MEDIA_TYPES, VOICE_MAPPING
 from .model_manager import model_manager
 from .models import ExportVoiceRequest, SpeechRequest
-from .rate_limiter import rate_limiter
+from .rate_limiter import rate_limiter, websocket_capacity
 from .validation import _ffmpeg_available, check_ffmpeg, is_valid_voice_name, normalize_text
 from .voices import voice_lock
+
+POCKET_TTS_VERSION = package_version("pocket-tts")
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -29,15 +33,6 @@ if not logger.handlers:
     _handler.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
-
-
-def check_hf_auth() -> bool:
-    try:
-        from huggingface_hub import whoami
-        whoami()
-        return True
-    except Exception:
-        return False
 
 
 def setup_hf_auth() -> bool:
@@ -61,10 +56,7 @@ def setup_hf_auth() -> bool:
 
 
 def has_voice_cloning() -> bool:
-    model = model_manager.model
-    if model is None:
-        return False
-    return getattr(model, 'has_voice_cloning', False)
+    return model_manager.voice_cloning
 
 
 shutdown_event = asyncio.Event()
@@ -85,7 +77,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("FFmpeg: Available")
 
-    await asyncio.to_thread(setup_hf_auth)
+    app.state.hf_authenticated = await asyncio.to_thread(setup_hf_auth)
     await asyncio.to_thread(model_manager.load, settings.model_load_timeout)
     await asyncio.to_thread(load_custom_voices)
 
@@ -136,8 +128,9 @@ app.add_middleware(
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    forwarded = request.headers.get("X-Forwarded-For")
-    client_ip = forwarded.split(',')[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    # Uvicorn resolves forwarded headers only for its configured trusted peers.
+    # Do not trust a raw client-supplied header here.
+    client_ip = request.client.host if request.client else "unknown"
 
     is_allowed, retry_after = rate_limiter.is_allowed(client_ip)
     if not is_allowed:
@@ -156,12 +149,12 @@ async def rate_limit_middleware(request: Request, call_next):
 async def list_models():
     """List available TTS models (languages with CPU/GPU variants)."""
     try:
-        from pocket_tts.models.tts_model import CONFIGS_DIR
+        from pocket_tts.utils.config import CONFIGS_DIR
         known_languages = [f.stem for f in CONFIGS_DIR.glob("*.yaml")]
     except Exception:
         known_languages = [
-            "english", "french_24l", "german_24l", "spanish_24l",
-            "portuguese_24l", "italian_24l"
+            "english", "french", "german", "spanish",
+            "portuguese", "italian", "dutch"
         ]
         
     models = []
@@ -193,8 +186,60 @@ async def get_formats():
     return {"formats": sorted(list(MEDIA_TYPES.keys()))}
 
 
+class AudioStreamingResponse(StreamingResponse):
+    """Prime generation before headers and always close its owned iterator."""
+
+    def __init__(self, source, first, **kwargs):
+        self.source = source
+
+        async def body():
+            yield first
+            async for chunk in source:
+                yield chunk
+
+        super().__init__(body(), **kwargs)
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self.source.aclose()
+
+
+async def audio_response(source, request: Request = None, **kwargs):
+    # Validation and admission errors must reach HTTP before success headers.
+    # Watch disconnects while priming too, including waits for model ownership.
+    async def disconnected():
+        while True:
+            if (await request.receive())["type"] == "http.disconnect":
+                return
+
+    first_task = asyncio.create_task(anext(source))
+    disconnect_task = asyncio.create_task(disconnected()) if request is not None else None
+    try:
+        if disconnect_task is not None:
+            done, _ = await asyncio.wait((first_task, disconnect_task),
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if disconnect_task in done:
+                disconnect_task.result()
+                raise HTTPException(status_code=499, detail="Client disconnected")
+        first = await first_task
+    except BaseException as exc:
+        first_task.cancel()
+        await asyncio.gather(first_task, return_exceptions=True)
+        await source.aclose()
+        if isinstance(exc, StopAsyncIteration):
+            raise HTTPException(status_code=500, detail="Synthesis produced no audio") from exc
+        raise
+    finally:
+        if disconnect_task is not None:
+            disconnect_task.cancel()
+            await asyncio.gather(disconnect_task, return_exceptions=True)
+    return AudioStreamingResponse(source, first, **kwargs)
+
+
 @app.post("/v1/audio/speech")
-async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks) -> StreamingResponse:
+async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks, request: Request) -> StreamingResponse:
     try:
         logger.info(f"TTS request: voice='{data.voice}', format='{data.response_format}', len={len(data.input)}")
 
@@ -209,14 +254,14 @@ async def text_to_speech(data: SpeechRequest, background_tasks: BackgroundTasks)
             if not known:
                 raise HTTPException(status_code=400, detail="Invalid voice name")
 
-        return StreamingResponse(
+        return await audio_response(
             generate_audio(
                 text=data.input, voice=data.voice, speed=data.speed,
                 format=data.response_format, temperature=data.temperature,
-                lsd_decode_steps=data.lsd_decode_steps, top_p=data.top_p,
-                repetition_penalty=data.repetition_penalty, model_tier=data.model,
+                lsd_decode_steps=data.lsd_decode_steps, model_tier=data.model,
                 stream=data.stream, background_tasks=background_tasks,
             ),
+            request=request,
             media_type=MEDIA_TYPES.get(data.response_format, "audio/wav"),
             headers={
                 "Transfer-Encoding": "chunked",
@@ -264,7 +309,7 @@ async def export_voice(request: ExportVoiceRequest):
                     raise RuntimeError("Model not loaded")
                 with torch.no_grad():
                     tts_model.temp = request.temperature
-                    tts_model.lsd_decode_steps = request.lsd_decode_steps
+                    tts_model.sampler_decode_steps = request.lsd_decode_steps
                     model_state = tts_model.get_state_for_audio_prompt(wav_path, truncate=request.truncate)
             finally:
                 model_manager.release_lock()
@@ -285,15 +330,18 @@ async def export_voice(request: ExportVoiceRequest):
 
 
 @app.get("/health")
-async def health():
+def health():
     return {
         "status": "ok",
         "version": app.version,
+        "pocket_tts_version": POCKET_TTS_VERSION,
+        "language": model_manager.language,
+        "temperature": settings.temperature,
         "model_loaded": model_manager.is_loaded,
         "device": str(model_manager.device) if model_manager.device else None,
         "sample_rate": model_manager.sample_rate,
         "voice_cloning": has_voice_cloning(),
-        "hf_authenticated": check_hf_auth(),
+        "hf_authenticated": getattr(app.state, "hf_authenticated", False),
         "cache_files": len([f for f in os.listdir(settings.audio_cache_dir)
                            if f.endswith(CACHE_EXTENSIONS)]) if os.path.exists(settings.audio_cache_dir) else 0,
     }
@@ -316,254 +364,168 @@ async def clear_cache():
     return {"status": "ok", "deleted": deleted}
 
 
+def limited_websocket(handler):
+    """Bound connected sockets, including their per-socket phrase queues."""
+    @wraps(handler)
+    async def wrapped(websocket: WebSocket):
+        await websocket.accept()
+        client_ip = websocket.client.host if websocket.client else "unknown"
+        allowed, retry_after = rate_limiter.is_allowed(client_ip)
+        if not allowed:
+            await websocket.close(code=1013, reason=f"Rate limit exceeded; retry after {retry_after}s")
+            return
+        if not websocket_capacity.acquire():
+            await websocket.close(code=1013, reason="WebSocket capacity exhausted")
+            return
+        try:
+            await handler(websocket)
+        finally:
+            websocket_capacity.release()
+    return wrapped
+
+
+def check_websocket_rate(websocket: WebSocket):
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    allowed, retry_after = rate_limiter.is_allowed(client_ip)
+    if not allowed:
+        raise RuntimeError(f"Rate limit exceeded; retry after {retry_after}s")
+
+
+@app.websocket("/v1/audio/live")
 @app.websocket("/v1/audio/stream")
+@limited_websocket
 async def websocket_tts(websocket: WebSocket):
-    """WebSocket endpoint for TTS streaming with sentence merging.
-
-    Protocol:
-      Client -> Server: {"type": "text.append", "text": "sentence", "voice": "nova", "format": "mp3", "request_id": "r0", "speed": 1.0}
-      Client -> Server: {"type": "text.append", "text": "sentence2", "voice": "nova", "format": "mp3", "request_id": "r1", "speed": 1.0}
-      Client -> Server: {"type": "text.done"}
-      Server -> Client: binary audio chunks
-      Server -> Client: {"status": "done", "audio_duration": 2.1, "gen_time": 1.05, "request_id": ["r0", "r1"]}
-      Server -> Client: {"status": "session_ended"}
-    """
-    await websocket.accept()
-
+    """Ordered requests. stream=true sends chunks as the model produces them."""
     if not model_manager.is_loaded:
         await websocket.send_json({"error": "TTS model not loaded", "status": "error"})
         await websocket.close(code=1011)
         return
 
-    # Bytes per second estimates for duration calculation
-    # wav/pcm: 24kHz * 2 bytes = 48000 B/s; mp3: ~220kbps VBR (-q:a 0); opus/aac: 192k CBR (-b:a 192k)
-    _bps = {"wav": 48000, "mp3": 27500, "opus": 24000, "aac": 24000, "flac": 32000, "pcm": 48000}
+    pending = asyncio.Queue(maxsize=32)
+
+    async def synthesize():
+        while True:
+            data = await pending.get()
+            if data.get("type") == "text.done":
+                await websocket.send_json({"status": "session_ended"})
+                continue
+            request_id = data.get("request_id")
+            try:
+                request = SpeechRequest(
+                    input=data.get("text", ""), voice=data.get("voice", "nova"),
+                    model=data.get("model", "english-cpu"),
+                    response_format=data.get("format", "mp3"),
+                    speed=data.get("speed", 1.0),
+                    temperature=data.get("temperature", settings.temperature),
+                    top_p=data.get("top_p", settings.top_p),
+                    lsd_decode_steps=data.get("lsd_decode_steps", settings.lsd_decode_steps),
+                )
+                streaming = data.get("stream", False)
+                started = time.monotonic()
+                first_audio = None
+                total_bytes = 0
+                chunks = []
+                if streaming:
+                    await websocket.send_json({
+                        "status": "audio_start", "request_id": [request_id],
+                        "format": request.response_format,
+                        "sample_rate": model_manager.sample_rate, "channels": 1,
+                    })
+                async for chunk in generate_audio(
+                    text=request.input, voice=request.voice, format=request.response_format,
+                    speed=request.speed, temperature=request.temperature,
+                    lsd_decode_steps=request.lsd_decode_steps,
+                    model_tier=request.model, skip_cache=True,
+                ):
+                    if first_audio is None:
+                        first_audio = time.monotonic() - started
+                    total_bytes += len(chunk)
+                    if streaming:
+                        await websocket.send_bytes(chunk)
+                    else:
+                        chunks.append(chunk)
+                if not total_bytes:
+                    raise RuntimeError("Synthesis produced no audio")
+                for chunk in chunks:
+                    await websocket.send_bytes(chunk)
+                byte_rate = {"pcm": model_manager.sample_rate * 2, "wav": model_manager.sample_rate * 2,
+                             "mp3": 27500, "opus": 24000, "aac": 24000, "flac": 32000, "webm": 24000}
+                audio_bytes = max(0, total_bytes - (44 if request.response_format == "wav" else 0))
+                await websocket.send_json({
+                    "status": "done", "request_id": [request_id],
+                    "audio_duration": round(audio_bytes / byte_rate[request.response_format], 3),
+                    "gen_time": round(time.monotonic() - started, 3),
+                    "first_audio_ms": round(first_audio * 1000, 1) if first_audio is not None else None,
+                })
+            except Exception as exc:
+                logger.warning("WebSocket synthesis failed: %s", exc)
+                await websocket.send_json({"status": "error", "request_id": request_id,
+                                           "error": str(exc)})
+
+    worker = asyncio.create_task(synthesize())
+    receiver = None
+    text_buffer = None
+    deadline = None
+
+    def enqueue(data):
+        if data.get("type") != "text.done":
+            check_websocket_rate(websocket)
+        if pending.full():
+            raise RuntimeError("Synthesis queue full")
+        pending.put_nowait(data)
+
+    def flush_text():
+        nonlocal text_buffer, deadline
+        if text_buffer and text_buffer["text"].strip():
+            enqueue(text_buffer)
+        text_buffer = None
+        deadline = None
 
     try:
-        # Merge queue — accumulates short sentences, flushed on threshold or text.done
-        merge_queue = []  # [{text, request_id, voice, format, speed, temperature, top_p, model}]
-        merge_queue_len = 0
-        MIN_MERGE = 40
-
-        request_count = 0
-        chunk_count_total = 0
-        gen_speed = 1.0
-        text_done_received = False
-        session_ended_sent = False
-        flush_task = None
-        last_text_time = time.time()
-        merge_lock = asyncio.Lock()
-        inflight_gens = 0  # number of in-flight audio generations (flush in progress)
-
-        # Defaults for optional per-append params
-        default_speed = 1.0
-        default_temperature = settings.temperature
-        default_top_p = settings.top_p
-        default_repetition_penalty = settings.repetition_penalty
-        default_lsd_decode_steps = settings.lsd_decode_steps
-        default_model_tier = settings.model_tier
-
-        async def try_send_session_ended():
-            """Send session_ended exactly once when all text is processed and no audio is in-flight."""
-            nonlocal session_ended_sent
-            async with merge_lock:
-                if session_ended_sent:
-                    return
-                if text_done_received and not merge_queue and inflight_gens == 0:
-                    session_ended_sent = True
-                    logger.debug("WS session ended")
-                    await websocket.send_json({"status": "session_ended"})
-
-        async def gen_audio(text, v, f, sp, temp, tp, mt):
-            """Generate audio for normalized text. Returns (chunks, duration, gen_time)."""
-            gen_chunks = []
-            t0 = time.time()
-            async for chunk in generate_audio(
-                text=text, voice=v, speed=sp, format=f,
-                temperature=temp, top_p=tp,
-                repetition_penalty=default_repetition_penalty,
-                lsd_decode_steps=default_lsd_decode_steps, model_tier=mt,
-            ):
-                gen_chunks.append(chunk)
-            gen_time = time.time() - t0
-            total_bytes = sum(len(c) for c in gen_chunks)
-            bps_val = _bps.get(f, 16000) / max(sp, 0.5)
-            audio_duration = total_bytes / bps_val
-            return gen_chunks, audio_duration, gen_time
-
-        async def send_audio(chunks, audio_duration, gen_time, req_ids):
-            """Send audio chunks and done message."""
-            nonlocal chunk_count_total, request_count, gen_speed
-            for c in chunks:
-                chunk_count_total += 1
-                await websocket.send_bytes(c)
-            await websocket.send_json({
-                "status": "done",
-                "audio_duration": round(audio_duration, 3),
-                "gen_time": round(gen_time, 3),
-                "request_id": req_ids,
-            })
-            label = f"merged {len(req_ids)}" if len(req_ids) > 1 else "single"
-            logger.info(f"WS done: {audio_duration:.1f}s | {label} | ids={req_ids}")
-            request_count += 1
-
-            if gen_time > 0:
-                current_speed = audio_duration / gen_time
-                gen_speed = 0.3 * current_speed + 0.7 * gen_speed
-
-        async def flush_merge_queue():
-            """Generate and send audio for buffered short sentences."""
-            nonlocal merge_queue_len, inflight_gens
-            async with merge_lock:
-                if not merge_queue:
-                    return
-                # Group by params — items with different params must be generated separately
-                groups = {}
-                for entry in merge_queue:
-                    key = (entry["voice"], entry["format"], entry["speed"],
-                           entry["temperature"], entry["top_p"], entry["model"])
-                    groups.setdefault(key, []).append(entry)
-                merge_queue.clear()
-                merge_queue_len = 0
-                inflight_gens += 1
-            try:
-                for (v, f, sp, temp, tp, mt), items in groups.items():
-                    merged_text = "\n".join(e["text"] for e in items)
-                    merged_ids = [e["request_id"] for e in items]
-                    try:
-                        chunks, dur, gen_t = await gen_audio(merged_text, v, f, sp, temp, tp, mt)
-                        await send_audio(chunks, dur, gen_t, merged_ids)
-                    except Exception:
-                        for rid in merged_ids:
-                            try:
-                                await websocket.send_json({
-                                    "error": "Generation failed", "status": "error",
-                                    "request_id": rid,
-                                })
-                            except Exception:
-                                break
-                        raise
-            finally:
-                async with merge_lock:
-                    inflight_gens -= 1
-                await try_send_session_ended()
-
-        async def inactivity_timeout():
-            """Flush merge queue after inactivity timeout (adaptive)."""
-            nonlocal flush_task
-            try:
-                timeout = 15.0 * max(0.5, min(2.0, gen_speed))
-                logger.debug(f"WS inactivity timeout {timeout:.1f}s")
-                await asyncio.sleep(timeout)
-                if merge_queue:
-                    logger.debug(f"WS timeout flush: {len(merge_queue)} items")
-                    await flush_merge_queue()
-                await try_send_session_ended()
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"Timeout flush error: {e}")
-            flush_task = None
-
-        # Main message loop
         while True:
-            try:
-                data = await websocket.receive_json()
-            except WebSocketDisconnect:
+            if receiver is None:
+                receiver = asyncio.create_task(websocket.receive_json())
+            timeout = max(0, deadline - time.monotonic()) if deadline is not None else None
+            done, _ = await asyncio.wait((receiver, worker), timeout=timeout,
+                                        return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                flush_text()
+                continue
+            if worker in done:
+                await worker
                 break
-            except Exception:
-                break
-
-            last_text_time = time.time()
-            msg_type = data.get("type")
-
-            if msg_type == "text.append":
-                text = data.get("text", "")
-                if not text.strip():
-                    continue
-
-                is_retry = data.get("retry", False)
-                entry_voice = data.get("voice", "nova")
-                entry_fmt = data.get("format", "mp3")
-                entry_speed = float(data.get("speed", default_speed))
-                entry_temperature = float(data.get("temperature", default_temperature))
-                entry_top_p = float(data.get("top_p", default_top_p))
-                entry_model = data.get("model", default_model_tier)
-                entry_request_id = data.get("request_id")
-
-                normalized = normalize_text(text)
-
-                # Retry requests get priority — flush queue, generate immediately
-                if is_retry:
-                    if flush_task and not flush_task.done():
-                        flush_task.cancel()
-                        flush_task = None
-                    await flush_merge_queue()
-                    logger.info(f"WS retry: req_id={entry_request_id} | voice={entry_voice} | '{text[:50]}'")
-                    chunks, dur, gen_t = await gen_audio(
-                        normalized, entry_voice, entry_fmt, entry_speed,
-                        entry_temperature, entry_top_p, entry_model,
-                    )
-                    await send_audio(chunks, dur, gen_t, [entry_request_id])
-                    continue
-
-                # If voice/format changed, flush previous queue
-                if merge_queue and (
-                    merge_queue[-1]["voice"] != entry_voice or
-                    merge_queue[-1]["format"] != entry_fmt
-                ):
-                    await flush_merge_queue()
-
-                # Cancel existing inactivity timeout
-                if flush_task and not flush_task.done():
-                    flush_task.cancel()
-                    flush_task = None
-
-                merge_queue.append({
-                    "text": normalized,
-                    "request_id": entry_request_id,
-                    "voice": entry_voice,
-                    "format": entry_fmt,
-                    "speed": entry_speed,
-                    "temperature": entry_temperature,
-                    "top_p": entry_top_p,
-                    "model": entry_model,
-                })
-                merge_queue_len += len(normalized)
-
-                # Check merge threshold
-                merge_threshold = 50 if any(
-                    e["text"].count('"') % 2 != 0 for e in merge_queue
-                ) else MIN_MERGE
-                if merge_queue_len >= merge_threshold or len(merge_queue) >= 5:
-                    await flush_merge_queue()
-
-                # Start inactivity timeout if queue is not empty
-                if merge_queue and not flush_task:
-                    flush_task = asyncio.create_task(inactivity_timeout())
-
-            elif msg_type == "text.done":
-                text_done_received = True
-                logger.debug(f"WS text.done: {len(merge_queue)} items in queue")
-                if flush_task and not flush_task.done():
-                    flush_task.cancel()
-                    flush_task = None
-                await flush_merge_queue()
-
-            else:
-                logger.warning(f"WS unknown message type: {msg_type}")
-
-        # Disconnect — flush remaining
-        if flush_task and not flush_task.done():
-            flush_task.cancel()
-        await flush_merge_queue()
-
+            data = receiver.result()
+            receiver = None
+            kind = data.get("type")
+            if kind == "text.delta" or (websocket.url.path.endswith("/live") and kind == "text.append"):
+                fragment = data.get("text", "")
+                if not isinstance(fragment, str):
+                    raise ValueError("text must be a string")
+                params = {key: value for key, value in data.items() if key not in ("text", "type")}
+                if text_buffer and any(text_buffer.get(key) != value for key, value in params.items()):
+                    flush_text()
+                if text_buffer is None:
+                    text_buffer = {**params, "type": "text.append", "text": "",
+                                   "stream": True, "format": data.get("format", "pcm")}
+                text_buffer["text"] += fragment
+                deadline = time.monotonic() + 0.12
+                if len(text_buffer["text"]) >= 120 or re.search(r"[.!?;:]\s*$", text_buffer["text"]):
+                    flush_text()
+            elif kind in ("text.append", "text.done"):
+                flush_text()
+                enqueue(data)
     except WebSocketDisconnect:
-        logger.debug("WebSocket client disconnected")
-    except Exception as e:
-        logger.warning(f"WebSocket error: {e}")
+        pass
+    except (RuntimeError, ValueError) as exc:
+        await websocket.close(code=1013, reason=str(exc)[:100])
+    finally:
+        if receiver is not None:
+            receiver.cancel()
+        worker.cancel()
+        await asyncio.gather(worker, *([receiver] if receiver else []), return_exceptions=True)
 
 @app.websocket("/v1/realtime")
+@limited_websocket
 async def websocket_realtime_tts(websocket: WebSocket):
     """Real-time TTS streaming — OpenAI Realtime API style.
 
@@ -579,8 +541,6 @@ async def websocket_realtime_tts(websocket: WebSocket):
       ...
       Server → Client: {"type":"response.done"}
     """
-    await websocket.accept()
-
     if not model_manager.is_loaded:
         await websocket.send_json({"type": "error", "error": {"message": "TTS model not loaded"}})
         await websocket.close(code=1011)
@@ -605,6 +565,7 @@ async def websocket_realtime_tts(websocket: WebSocket):
             sentence = sentence.strip()
             if not sentence:
                 return
+            check_websocket_rate(websocket)
             logger.info(f"WS realtime: '{sentence[:60]}'")
             try:
                 chunk_count = 0
@@ -649,6 +610,8 @@ async def websocket_realtime_tts(websocket: WebSocket):
                 text = data.get("text", "")
                 if text:
                     buffer += normalize_text(text)
+                    if len(buffer) > settings.max_input_length:
+                        raise ValueError("Text buffer exceeds maximum input length")
                     await drain_buffer()
             elif msg_type == "input_text.done":
                 break
@@ -686,6 +649,7 @@ async def websocket_realtime_tts(websocket: WebSocket):
 @app.get("/tts_stream")
 @app.get("/v1/audio/speech/tts_stream")
 async def xtts_stream_get(
+    request: Request,
     text: str = "",
     speaker_wav: str = "nova",
     language: str = "en",
@@ -701,8 +665,9 @@ async def xtts_stream_get(
         raise HTTPException(status_code=400, detail="text is required")
     if not model_manager.is_loaded:
         raise HTTPException(status_code=503, detail="TTS model not loaded")
-    return StreamingResponse(
+    return await audio_response(
         generate_audio(text=text, voice=v, speed=speed, format=format),
+        request=request,
         media_type=MEDIA_TYPES.get(format, "audio/mpeg"),
         headers={"Transfer-Encoding": "chunked", "X-Accel-Buffering": "no"},
     )
@@ -723,8 +688,9 @@ async def xtts_post(request: Request) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="text is required")
     if not model_manager.is_loaded:
         raise HTTPException(status_code=503, detail="TTS model not loaded")
-    return StreamingResponse(
+    return await audio_response(
         generate_audio(text=text, voice=voice, speed=speed, format=fmt),
+        request=request,
         media_type=MEDIA_TYPES.get(fmt, "audio/wav"),
         headers={"Transfer-Encoding": "chunked", "X-Accel-Buffering": "no"},
     )

@@ -41,3 +41,22 @@ class RateLimiter:
 
 
 rate_limiter = RateLimiter()
+
+
+class CapacityLimiter:
+    """Nonblocking admission shared by HTTP and WebSocket producers."""
+
+    def __init__(self, limit: int):
+        if limit < 1:
+            raise ValueError("Capacity must be positive")
+        self._slots = threading.BoundedSemaphore(limit)
+
+    def acquire(self) -> bool:
+        return self._slots.acquire(blocking=False)
+
+    def release(self) -> None:
+        self._slots.release()
+
+
+synthesis_capacity = CapacityLimiter(settings.max_pending_syntheses)
+websocket_capacity = CapacityLimiter(settings.max_websocket_connections)

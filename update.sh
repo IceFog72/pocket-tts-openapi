@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Change to the script's directory
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 echo ""
 echo "========================================"
@@ -17,8 +17,13 @@ if ! command -v git &> /dev/null; then
 fi
 
 # Check for .git directory
-if [ ! -d ".git" ]; then
+if [ ! -e ".git" ]; then
     echo -e "\e[91mNot running from a Git repository. Reinstall using git clone to get updates.\e[0m"
+    exit 1
+fi
+
+if [ ! -x "venv/bin/python" ]; then
+    echo "Virtual environment (venv) not found. Run ./install.sh first."
     exit 1
 fi
 
@@ -35,13 +40,13 @@ fi
 
 echo ""
 echo "Updating dependencies..."
-if [ -f "venv/bin/activate" ]; then
-    source venv/bin/activate
-    python3 -m pip install --upgrade pip
-    pip install -e .
-else
-    echo -e "\e[93mVirtual environment (venv) not found. Skipping dependency update.\e[97m"
-    echo "Run ./install.sh first if this is a new installation."
+if ! venv/bin/python -m pip install --upgrade pip; then
+    echo "Failed to update pip. Update incomplete."
+    exit 1
+fi
+if ! venv/bin/python -m pip install -e .; then
+    echo "Failed to install dependencies. Update incomplete."
+    exit 1
 fi
 
 echo ""

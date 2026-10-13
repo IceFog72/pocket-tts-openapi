@@ -31,6 +31,7 @@ FFMPEG_FORMATS: Dict[str, Tuple[str, str]] = {
     "opus": ("ogg", "opus"),
     "aac": ("adts", "aac"),
     "flac": ("flac", "flac"),
+    "webm": ("webm", "libopus"),
 }
 
 MEDIA_TYPES: Dict[str, str] = {
@@ -40,6 +41,7 @@ MEDIA_TYPES: Dict[str, str] = {
     "opus": "audio/opus",
     "flac": "audio/flac",
     "pcm": "audio/pcm",
+    "webm": "audio/webm",
 }
 
 CACHE_EXTENSIONS = tuple("." + ext for ext in list(FFMPEG_FORMATS.keys()) + ["wav", "pcm"])
