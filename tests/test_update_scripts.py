@@ -46,3 +46,12 @@ echo "$stage" >> "$UPDATE_TEST_LOG"
         "missing-venv": [],
     }
     assert (log.read_text().splitlines() if log.exists() else []) == expected[failure]
+
+
+def test_shell_scripts_are_executable_in_git():
+    # Users run ./update.sh directly. Git must store the executable bit.
+    root = Path(__file__).resolve().parents[1]
+    entries = subprocess.run(["git", "ls-files", "-s", "*.sh"], cwd=root,
+                             capture_output=True, text=True, check=True).stdout.splitlines()
+    assert entries
+    assert [line for line in entries if not line.startswith("100755")] == []
