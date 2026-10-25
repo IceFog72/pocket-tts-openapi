@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Always install into the project directory, wherever the script is run from.
+cd "$(dirname "$0")"
+
 echo "Creating virtual environment..."
 python3 -m venv venv
 

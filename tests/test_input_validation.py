@@ -222,3 +222,16 @@ def test_corrupt_voice_reference_is_not_a_retryable_server_failure(monkeypatch, 
     assert 'private file path' not in response.text
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('fields', [{'top_p': 0.0}, {'top_p': 5}, {'repetition_penalty': 0.5}])
+def test_ignored_legacy_fields_accept_any_number(fields):
+    # Pocket TTS 3.3 ignores these. An old client's value must not fail speech.
+    from pocket_tts_server.models import SpeechRequest
+    assert SpeechRequest(input='Hello.', **fields)
+
+
+def test_omitted_model_uses_configured_model_tier(monkeypatch):
+    from pocket_tts_server.models import SpeechRequest
+    monkeypatch.setattr(audio.settings, 'model_tier', 'tts-1-cuda')
+    assert SpeechRequest(input='Hello.').model == 'tts-1-cuda'

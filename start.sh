@@ -22,7 +22,8 @@ check_port() {
     local process_name=""
     
     if command -v lsof &> /dev/null; then
-        pid=$(lsof -i :$port -t 2>/dev/null | head -1)
+        # Listening sockets only: clients connected to the port are not its owner.
+        pid=$(lsof -nP -iTCP:$port -sTCP:LISTEN -t 2>/dev/null | head -1)
         if [ -n "$pid" ]; then
             process_name=$(ps -p $pid -o comm= 2>/dev/null)
         fi
@@ -101,6 +102,10 @@ if [ -n "$PID" ]; then
                     kill -9 $PID 2>/dev/null
                     sleep 1
                 fi
+                if [ -n "$(check_port $DEFAULT_PORT | cut -d':' -f1)" ]; then
+                    echo "Error: Port $DEFAULT_PORT is still in use."
+                    exit 1
+                fi
                 echo "Restarting server..."
                 ;;
             2)
@@ -172,6 +177,11 @@ if [ -n "$PID" ]; then
                 ;;
         esac
     fi
+fi
+
+if [ ! -f "venv/bin/activate" ]; then
+    echo "Virtual environment (venv) not found. Run ./install.sh first."
+    exit 1
 fi
 
 echo ""

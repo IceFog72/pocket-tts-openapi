@@ -19,5 +19,7 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         logging.info("Server stopped by user")
-    except Exception as e:
+    except Exception:
         logging.exception("Failed to start server")
+        # Launcher scripts report a crash only on a nonzero exit code.
+        sys.exit(1)

@@ -506,3 +506,25 @@ def test_rate_limit_keeps_active_and_queued_speech(monkeypatch):
             assert ws.receive_json()['status'] == 'done'
     finally:
         release.set()
+
+
+def test_websocket_queue_uses_each_phrase_voice(monkeypatch):
+    # Multi-voice clients alternate voices between quote, action and other
+    # segments on one socket. Each queued phrase must use its own voice.
+    used = []
+    model = SilentModel()
+    model.get_state_for_audio_prompt = lambda voice: used.append(voice) or {}
+    manager = ModelManager(_model=model, _language='english', _device='cpu')
+    monkeypatch.setattr(api, 'model_manager', manager)
+    monkeypatch.setattr(audio, 'model_manager', manager)
+    voices = ['alba', 'marius', 'alba']
+    with TestClient(api.app).websocket_connect('/v1/audio/stream') as ws:
+        for i, voice in enumerate(voices):
+            ws.send_json({'type': 'text.append', 'request_id': f'r{i}', 'text': f'Segment {i}.',
+                          'voice': voice, 'format': 'pcm', 'stream': True})
+        for i in range(len(voices)):
+            assert ws.receive_json()['status'] == 'audio_start'
+            ws.receive_bytes()
+            done = ws.receive_json()
+            assert done['status'] == 'done' and done['request_id'] == [f'r{i}']
+    assert used == voices

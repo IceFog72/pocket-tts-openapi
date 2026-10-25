@@ -444,7 +444,7 @@ async def websocket_tts(websocket: WebSocket):
             try:
                 request = SpeechRequest(
                     input=data.get("text", ""), voice=data.get("voice", "nova"),
-                    model=data.get("model", "english-cpu"),
+                    model=data.get("model"),
                     response_format=data.get("format", "mp3"),
                     speed=data.get("speed", 1.0),
                     temperature=data.get("temperature", settings.temperature),
