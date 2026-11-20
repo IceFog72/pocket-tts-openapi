@@ -24,16 +24,15 @@ if errorlevel 1 (
     goto fail
 )
 
-set /p install_cuda=Do you want to install PyTorch with CUDA support? (y/n):
-if /I "%install_cuda%" == "y" (
-    echo Installing PyTorch with CUDA support...
-    python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-    if errorlevel 1 (
-        echo Failed to install PyTorch with CUDA support.
-        goto fail
-    )
-) else (
-    echo Proceeding with default PyTorch installation...
+rem PyTorch publishes ROCm wheels for Linux only.
+set /p install_cuda=Install PyTorch with NVIDIA CUDA support? (y/n, default n = CPU only):
+set torch_index=cpu
+if /I "%install_cuda%" == "y" set torch_index=cu128
+echo Installing PyTorch (%torch_index%)...
+python -m pip install torch --index-url https://download.pytorch.org/whl/%torch_index%
+if errorlevel 1 (
+    echo Failed to install PyTorch.
+    goto fail
 )
 
 echo Installing dependencies...

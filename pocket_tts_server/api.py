@@ -26,7 +26,8 @@ from .constants import CACHE_EXTENSIONS, DEFAULT_VOICES, MEDIA_TYPES, VOICE_MAPP
 from .model_manager import model_manager
 from .models import ExportVoiceRequest, SpeechRequest
 from .rate_limiter import rate_limiter, websocket_capacity
-from .validation import _ffmpeg_available, check_ffmpeg, is_valid_voice_name, normalize_text, resolve_voice
+from .validation import (_ffmpeg_available, available_languages, check_ffmpeg, is_valid_voice_name,
+                         normalize_text, resolve_voice)
 from .voices import voice_lock
 
 POCKET_TTS_VERSION = package_version("pocket-tts")
@@ -48,9 +49,8 @@ def setup_hf_auth() -> bool:
             return True
         except Exception:
             pass
-        env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-        if env_token:
-            login(token=env_token)
+        if settings.hf_token:
+            login(token=settings.hf_token)
             return True
         return False
     except ImportError:
@@ -172,15 +172,8 @@ async def rate_limit_middleware(request: Request, call_next):
 @app.get("/models")
 async def list_models():
     """List available TTS models (languages with CPU/GPU variants)."""
-    try:
-        from pocket_tts.utils.config import CONFIGS_DIR
-        known_languages = [f.stem for f in CONFIGS_DIR.glob("*.yaml")]
-    except Exception:
-        known_languages = [
-            "english", "french", "german", "spanish",
-            "portuguese", "italian", "dutch"
-        ]
-        
+    known_languages = available_languages()
+
     models = []
     created_time = int(time.time())
     for lang in sorted(known_languages):

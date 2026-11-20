@@ -93,9 +93,9 @@ def test_current_language_defaults_and_temperature():
         weights_path = config.weights_path
         assert isinstance(weights_path, str) and weights_path.startswith('hf://')
     english = yaml.safe_load((CONFIGS_DIR / 'english.yaml').read_text())
-    september = yaml.safe_load((CONFIGS_DIR / 'english_2026-09.yaml').read_text())
-    assert english['weights_path'] == september['weights_path'].replace('english_2026-09', 'english')
-    assert english['flow_lm']['transformer'] == september['flow_lm']['transformer']
+    october = yaml.safe_load((CONFIGS_DIR / 'english_2026-10.yaml').read_text())
+    assert english['weights_path'] == october['weights_path'].replace('english_2026-10', 'english')
+    assert english['flow_lm']['transformer'] == october['flow_lm']['transformer']
 
 
 def test_float_wav_reference_uses_patched_reader_without_loading_weights(monkeypatch, tmp_path):

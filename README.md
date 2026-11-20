@@ -2,11 +2,13 @@
 
 Local speech generation with [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts), an OpenAI-compatible HTTP API, XTTS-compatible endpoints, and WebSocket streaming.
 
-Uses Pocket TTS **3.3.x**, with **English** and **temperature 0.3** by default. Stable language names follow the default checkpoints shipped with the installed Pocket TTS version. CPU is the default device; CUDA is optional.
+Uses Pocket TTS **4.0.x**, with **English** and **temperature 0.3** by default. Stable language names follow the default checkpoints shipped with the installed Pocket TTS version. CPU is the default device. NVIDIA CUDA and, on Linux, AMD ROCm are optional. ROCm builds of PyTorch use the `-gpu`/`-cuda` model variants unchanged. PyTorch has no desktop Vulkan backend.
 
 ## Install and start
 
-Install Python 3.10 or newer and FFmpeg. Python 3.12 is used in the current local setup. FFmpeg is needed for encoded formats and speed changes.
+Install Python 3.10 or newer and FFmpeg. FFmpeg is needed for encoded formats and speed changes.
+
+Tested only on Arch Linux (EndeavourOS, kernel 7.2 zen, Python 3.12 and 3.14, FFmpeg 9.0, AMD Ryzen 7 2700X, NVIDIA RTX 2060). The CPU backend was verified with Pocket TTS 4.0.1 and PyTorch 2.15. Windows, macOS, other Linux distributions, and AMD ROCm are untested.
 
 ```bash
 git clone https://github.com/IceFog72/pocket-tts-openapi
@@ -17,7 +19,7 @@ bash start.sh
 
 On Windows, run `install.bat`, then `start.bat`.
 
-The installer creates `venv` and installs the project. The first model load downloads weights from Hugging Face. For voice cloning, complete any access requirements on the [Pocket TTS model page](https://huggingface.co/kyutai/pocket-tts) and authenticate with Hugging Face if prompted.
+The installer creates `venv`, asks for the PyTorch backend (CPU, CUDA, or ROCm on Linux), and installs the project. Settings come from `config.ini`. To override one from the environment or `.env`, prefix its name with `POCKET_TTS_`, for example `POCKET_TTS_LANGUAGE=french`. `HF_TOKEN` keeps its standard name. The first model load downloads weights from Hugging Face. For voice cloning, complete any access requirements on the [Pocket TTS model page](https://huggingface.co/kyutai/pocket-tts) and authenticate with Hugging Face if prompted.
 
 The default address is `http://localhost:8005`. Settings live in `config.ini`. The default bind address is `0.0.0.0`, so the server also listens on network interfaces.
 
@@ -132,7 +134,7 @@ Correct the flagged field before retrying an error with `retryable: false`. Malf
 
 Model identifiers use `<language>-<device>`, such as `english-cpu` or `french-gpu`. Query `/v1/models` for the variants installed on your server.
 
-Stable languages are `english`, `french`, `german`, `spanish`, `portuguese`, `italian`, and `dutch`. Larger `*_24l` variants are optional. In Pocket TTS 3.3.0, the default English configuration uses the September 2026 checkpoint.
+Stable languages are `english`, `french`, `german`, `spanish`, `portuguese`, `italian`, and `dutch`. Larger `*_24l` variants are optional. In Pocket TTS 4.0.1, the default English configuration uses the October 2026 checkpoint (`english_2026-10`).
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
@@ -142,7 +144,7 @@ Stable languages are `english`, `french`, `german`, `spanish`, `portuguese`, `it
 
 Omit temperature to use the server default. Long text is split for generation. The default maximum input length is 4096 characters.
 
-`top_p` and `repetition_penalty` remain accepted for older clients, but Pocket TTS 3.3 ignores them. They do not affect generation or create separate cache entries.
+`top_p` and `repetition_penalty` remain accepted for older clients, but Pocket TTS ignores them. They do not affect generation or create separate cache entries.
 
 ## Custom voices
 

@@ -82,15 +82,18 @@ def check_ffmpeg() -> bool:
 _ffmpeg_available = check_ffmpeg()
 
 
-def validate_model_name(model: str) -> str:
+def available_languages() -> list[str]:
+    """Languages with a predefined config in the installed Pocket TTS."""
     from pocket_tts.utils.config import CONFIGS_DIR
+    return sorted(config.stem for config in CONFIGS_DIR.glob("*.yaml"))
+
+
+def validate_model_name(model: str) -> str:
     model = model.strip()
     if model in ("tts-1", "tts-1-hd", "tts-1-cuda"):
         return model
     language, separator, device = model.rpartition("-")
-    if not separator or device not in ("cpu", "gpu", "cuda") or not any(
-        config.stem == language for config in CONFIGS_DIR.glob("*.yaml")
-    ):
+    if not separator or device not in ("cpu", "gpu", "cuda") or language not in available_languages():
         raise ValueError("Unknown model. Use /v1/models to list available models")
     return model
 

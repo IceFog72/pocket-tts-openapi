@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 
 from .config import settings
+from .validation import available_languages
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,13 @@ class ModelManager:
         self._lock.release()
 
     def load(self, timeout: int = settings.model_load_timeout, language: Optional[str] = None) -> None:
-        target_language = language or settings.language
+        target_language = (language or settings.language).strip()
+        known = available_languages()
+        if target_language not in known:
+            raise ValueError(
+                f"Unknown TTS language {target_language!r}. Set [tts] language in "
+                f"config.ini to one of: {', '.join(known)}"
+            )
 
         global _audio_read_patched
         import pocket_tts.data.audio as pt_audio

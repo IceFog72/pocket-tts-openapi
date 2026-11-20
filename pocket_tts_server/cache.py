@@ -21,7 +21,7 @@ class CacheManager:
     def generate_cache_key(self, text: str, voice_name: str, format: str,
                            speed: float, temperature: float, lsd_decode_steps: int,
                            top_p: float, repetition_penalty: float, model_tier: str) -> str:
-        # Legacy sampling arguments are accepted but ignored by Pocket TTS 3.3.
+        # Legacy sampling arguments are accepted but ignored by Pocket TTS.
         cache_key = f"v2|{text}|{voice_name}|{format}|{speed}|{temperature}|{lsd_decode_steps}|{model_tier}"
         return hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
 

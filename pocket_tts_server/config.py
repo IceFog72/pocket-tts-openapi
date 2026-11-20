@@ -3,7 +3,8 @@ import os
 from configparser import ConfigParser
 from typing import List
 
-from pydantic_settings import BaseSettings
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _load_ini(path: str = "config.ini") -> dict:
@@ -114,9 +115,16 @@ class Settings(BaseSettings):
     enable_high_priority: bool = _ini.get("enable_high_priority", True)
     model_load_timeout: int = _ini.get("model_load_timeout", 300)
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    hf_token: str = Field("", validation_alias=AliasChoices("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"))
+
+    # Unprefixed names collide with OS variables: LANGUAGE is a locale variable
+    # and silently replaced the configured model language (issue #4).
+    model_config = SettingsConfigDict(
+        env_prefix="POCKET_TTS_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()

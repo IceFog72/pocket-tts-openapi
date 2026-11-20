@@ -17,13 +17,20 @@ fi
 echo "Upgrading pip..."
 python -m pip install --upgrade pip
 
-read -p "Do you want to install PyTorch with CUDA support? (y/n): " install_cuda
-if [[ "$install_cuda" =~ ^[Yy]$ ]]; then
-    echo "Installing PyTorch with CUDA support..."
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-else
-    echo "Proceeding with default PyTorch installation..."
-fi
+# Install torch before the project so pip keeps this build instead of PyPI's
+# default Linux wheel, which bundles several GB of CUDA libraries.
+echo "Select the PyTorch backend:"
+echo "  1) CPU only (default)"
+echo "  2) NVIDIA GPU (CUDA 12.8)"
+echo "  3) AMD GPU (ROCm 10.0)"
+read -p "Choice [1-3]: " torch_backend
+case "$torch_backend" in
+    2) torch_index=cu128 ;;
+    3) torch_index=rocm10.0 ;;
+    *) torch_index=cpu ;;
+esac
+echo "Installing PyTorch ($torch_index)..."
+pip install torch --index-url "https://download.pytorch.org/whl/$torch_index"
 
 echo "Installing dependencies..."
 pip install -e .

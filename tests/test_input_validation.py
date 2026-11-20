@@ -226,7 +226,7 @@ def test_corrupt_voice_reference_is_not_a_retryable_server_failure(monkeypatch, 
 
 @pytest.mark.parametrize('fields', [{'top_p': 0.0}, {'top_p': 5}, {'repetition_penalty': 0.5}])
 def test_ignored_legacy_fields_accept_any_number(fields):
-    # Pocket TTS 3.3 ignores these. An old client's value must not fail speech.
+    # Pocket TTS ignores these. An old client's value must not fail speech.
     from pocket_tts_server.models import SpeechRequest
     assert SpeechRequest(input='Hello.', **fields)
 
